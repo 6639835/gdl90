@@ -135,13 +135,13 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             section: "3.1-3.8",
             title: "Standard Message Definitions",
             state: SupportState::Partial,
-            notes: "All outer message formats are implemented; section 3.6 inner payload structures remain blocked by DO-282.",
+            notes: "All outer message formats are implemented; section 3.6 now includes typed pass-through header/layout parsing, but inner state and mode bitfields remain external-spec dependent.",
         },
         SectionSupportEntry {
             section: "3.6",
             title: "Pass-Through Reports Inner Payloads",
-            state: SupportState::BlockedByExternalSpec,
-            notes: "Basic and Long payload internals are defined in RTCA/DO-282 Section 2.2, not in the supplied Garmin text.",
+            state: SupportState::Partial,
+            notes: "Basic and Long payloads are structurally decoded into header, state vector, mode status, and auxiliary state vector segments; full bit-level state/mode field decoding still needs DO-282.",
         },
         SectionSupportEntry {
             section: "4.1.1",

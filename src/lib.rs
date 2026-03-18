@@ -23,7 +23,8 @@ mod util;
 
 pub use crate::error::{Gdl90Error, Result};
 pub use crate::message::{
-    AddressType, FrameMessageDecoder, Heartbeat, HeartbeatStatus, HeightAboveTerrain,
-    Initialization, Message, OwnshipGeometricAltitude, PassThroughReport, TargetAlertStatus,
-    TargetMisc, TargetReport, TrackType, VerticalFigureOfMerit,
+    AddressType, BasicUatPayload, FrameMessageDecoder, Heartbeat, HeartbeatStatus,
+    HeightAboveTerrain, Initialization, LongUatPayload, Message, OwnshipGeometricAltitude,
+    PassThroughReport, TargetAlertStatus, TargetMisc, TargetReport, TrackType,
+    UatAdsbPayloadHeader, VerticalFigureOfMerit,
 };

@@ -520,6 +520,154 @@ pub struct PassThroughReport<const N: usize> {
     pub payload: [u8; N],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UatAdsbPayloadHeader {
+    pub payload_type_code: u8,
+    pub address_qualifier: u8,
+    pub address: u32,
+}
+
+impl UatAdsbPayloadHeader {
+    pub const LEN: usize = 4;
+
+    pub fn decode(payload: &[u8]) -> Result<Self> {
+        if payload.len() != Self::LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "UAT ADS-B payload header",
+                expected: "4 bytes",
+                actual: payload.len(),
+            });
+        }
+
+        Ok(Self {
+            payload_type_code: payload[0] >> 3,
+            address_qualifier: payload[0] & 0x07,
+            address: ((payload[1] as u32) << 16) | ((payload[2] as u32) << 8) | payload[3] as u32,
+        })
+    }
+
+    pub fn encode(&self) -> Result<[u8; Self::LEN]> {
+        if self.payload_type_code > 0x1F {
+            return Err(Gdl90Error::InvalidField {
+                field: "UAT ADS-B payload type code",
+                details: "must fit in 5 bits".to_string(),
+            });
+        }
+        if self.address_qualifier > 0x07 {
+            return Err(Gdl90Error::InvalidField {
+                field: "UAT ADS-B address qualifier",
+                details: "must fit in 3 bits".to_string(),
+            });
+        }
+        if self.address > 0xFF_FFFF {
+            return Err(Gdl90Error::InvalidField {
+                field: "UAT ADS-B address",
+                details: "must fit in 24 bits".to_string(),
+            });
+        }
+
+        Ok([
+            (self.payload_type_code << 3) | self.address_qualifier,
+            ((self.address >> 16) & 0xFF) as u8,
+            ((self.address >> 8) & 0xFF) as u8,
+            (self.address & 0xFF) as u8,
+        ])
+    }
+
+    pub fn is_basic(self) -> bool {
+        self.payload_type_code == 0
+    }
+
+    pub fn is_long_type1(self) -> bool {
+        self.payload_type_code == 1
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BasicUatPayload {
+    pub header: UatAdsbPayloadHeader,
+    pub state_vector: [u8; 13],
+    pub reserved: u8,
+}
+
+impl BasicUatPayload {
+    pub const LEN: usize = 18;
+
+    pub fn decode(payload: &[u8]) -> Result<Self> {
+        if payload.len() != Self::LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "Basic UAT payload",
+                expected: "18 bytes",
+                actual: payload.len(),
+            });
+        }
+
+        let header = UatAdsbPayloadHeader::decode(&payload[..4])?;
+        let mut state_vector = [0u8; 13];
+        state_vector.copy_from_slice(&payload[4..17]);
+
+        Ok(Self {
+            header,
+            state_vector,
+            reserved: payload[17],
+        })
+    }
+
+    pub fn encode(&self) -> Result<[u8; Self::LEN]> {
+        let mut out = [0u8; Self::LEN];
+        out[..4].copy_from_slice(&self.header.encode()?);
+        out[4..17].copy_from_slice(&self.state_vector);
+        out[17] = self.reserved;
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LongUatPayload {
+    pub header: UatAdsbPayloadHeader,
+    pub state_vector: [u8; 13],
+    pub mode_status: [u8; 12],
+    pub auxiliary_state_vector: [u8; 5],
+}
+
+impl LongUatPayload {
+    pub const LEN: usize = 34;
+
+    pub fn decode(payload: &[u8]) -> Result<Self> {
+        if payload.len() != Self::LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "Long UAT payload",
+                expected: "34 bytes",
+                actual: payload.len(),
+            });
+        }
+
+        let header = UatAdsbPayloadHeader::decode(&payload[..4])?;
+        let mut state_vector = [0u8; 13];
+        state_vector.copy_from_slice(&payload[4..17]);
+        let mut mode_status = [0u8; 12];
+        mode_status.copy_from_slice(&payload[17..29]);
+        let mut auxiliary_state_vector = [0u8; 5];
+        auxiliary_state_vector.copy_from_slice(&payload[29..34]);
+
+        Ok(Self {
+            header,
+            state_vector,
+            mode_status,
+            auxiliary_state_vector,
+        })
+    }
+
+    pub fn encode(&self) -> Result<[u8; Self::LEN]> {
+        let mut out = [0u8; Self::LEN];
+        out[..4].copy_from_slice(&self.header.encode()?);
+        out[4..17].copy_from_slice(&self.state_vector);
+        out[17..29].copy_from_slice(&self.mode_status);
+        out[29..34].copy_from_slice(&self.auxiliary_state_vector);
+        Ok(out)
+    }
+}
+
 impl<const N: usize> PassThroughReport<N> {
     pub fn decode(message_name: &'static str, payload: &[u8]) -> Result<Self> {
         if payload.len() != N + 4 {
@@ -546,6 +694,38 @@ impl<const N: usize> PassThroughReport<N> {
         )?);
         out.extend_from_slice(&self.payload);
         Ok(out)
+    }
+}
+
+impl PassThroughReport<18> {
+    pub fn basic_payload(&self) -> BasicUatPayload {
+        BasicUatPayload::decode(&self.payload).expect("fixed-size basic payload should decode")
+    }
+
+    pub fn from_basic_payload(
+        time_of_reception: Option<u32>,
+        payload: &BasicUatPayload,
+    ) -> Result<Self> {
+        Ok(Self {
+            time_of_reception,
+            payload: payload.encode()?,
+        })
+    }
+}
+
+impl PassThroughReport<34> {
+    pub fn long_payload(&self) -> LongUatPayload {
+        LongUatPayload::decode(&self.payload).expect("fixed-size long payload should decode")
+    }
+
+    pub fn from_long_payload(
+        time_of_reception: Option<u32>,
+        payload: &LongUatPayload,
+    ) -> Result<Self> {
+        Ok(Self {
+            time_of_reception,
+            payload: payload.encode()?,
+        })
     }
 }
 
@@ -699,16 +879,26 @@ impl Message {
                 message.altitude_feet, message.vertical_warning
             ),
             Self::TrafficReport(message) => format_target_summary("traffic", message),
-            Self::BasicReport(message) => format!(
-                "tor={:?} payload={} bytes",
-                message.time_of_reception,
-                message.payload.len()
-            ),
-            Self::LongReport(message) => format!(
-                "tor={:?} payload={} bytes",
-                message.time_of_reception,
-                message.payload.len()
-            ),
+            Self::BasicReport(message) => {
+                let payload = message.basic_payload();
+                format!(
+                    "tor={:?} type={} qualifier={} address={:#08x}",
+                    message.time_of_reception,
+                    payload.header.payload_type_code,
+                    payload.header.address_qualifier,
+                    payload.header.address
+                )
+            }
+            Self::LongReport(message) => {
+                let payload = message.long_payload();
+                format!(
+                    "tor={:?} type={} qualifier={} address={:#08x}",
+                    message.time_of_reception,
+                    payload.header.payload_type_code,
+                    payload.header.address_qualifier,
+                    payload.header.address
+                )
+            }
             Self::ForeFlightId(message) => format!(
                 "version={} name={} long_name={}",
                 message.version, message.device_name, message.device_long_name

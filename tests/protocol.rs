@@ -8,9 +8,9 @@ use gdl90::foreflight::{
 };
 use gdl90::frame::decode_frame;
 use gdl90::message::{
-    AddressType, FrameMessageDecoder, Heartbeat, HeartbeatStatus, Message,
-    OwnshipGeometricAltitude, TargetAlertStatus, TargetMisc, TargetReport, TrackType,
-    VerticalFigureOfMerit,
+    AddressType, BasicUatPayload, FrameMessageDecoder, Heartbeat, HeartbeatStatus, LongUatPayload,
+    Message, OwnshipGeometricAltitude, PassThroughReport, TargetAlertStatus, TargetMisc,
+    TargetReport, TrackType, UatAdsbPayloadHeader, VerticalFigureOfMerit,
 };
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
@@ -303,6 +303,55 @@ fn ownship_report_round_trip() {
         report.emergency_priority_code
     );
     assert_eq!(decoded.spare, report.spare);
+}
+
+#[test]
+fn basic_pass_through_report_exposes_inner_payload_sections() {
+    let payload = BasicUatPayload {
+        header: UatAdsbPayloadHeader {
+            payload_type_code: 0,
+            address_qualifier: 2,
+            address: 0xAB_CD_EF,
+        },
+        state_vector: [0x11; 13],
+        reserved: 0x7A,
+    };
+    let report = PassThroughReport::<18>::from_basic_payload(Some(0x12_34_56), &payload).unwrap();
+    let message = Message::BasicReport(report.clone());
+
+    let decoded = match Message::decode(&message.encode().unwrap()).unwrap() {
+        Message::BasicReport(report) => report,
+        other => panic!("expected basic report, got {other:?}"),
+    };
+
+    assert_eq!(decoded.time_of_reception, Some(0x12_34_56));
+    assert_eq!(decoded.basic_payload(), payload);
+    assert_eq!(decoded.basic_payload().encode().unwrap(), report.payload);
+}
+
+#[test]
+fn long_pass_through_report_exposes_inner_payload_sections() {
+    let payload = LongUatPayload {
+        header: UatAdsbPayloadHeader {
+            payload_type_code: 1,
+            address_qualifier: 0,
+            address: 0x01_23_45,
+        },
+        state_vector: [0x22; 13],
+        mode_status: [0x33; 12],
+        auxiliary_state_vector: [0x44; 5],
+    };
+    let report = PassThroughReport::<34>::from_long_payload(None, &payload).unwrap();
+    let message = Message::LongReport(report.clone());
+
+    let decoded = match Message::decode(&message.encode().unwrap()).unwrap() {
+        Message::LongReport(report) => report,
+        other => panic!("expected long report, got {other:?}"),
+    };
+
+    assert_eq!(decoded.time_of_reception, None);
+    assert_eq!(decoded.long_payload(), payload);
+    assert_eq!(decoded.long_payload().encode().unwrap(), report.payload);
 }
 
 #[test]

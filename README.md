@@ -23,6 +23,11 @@ This crate supports:
   - Long Report
   - Height Above Terrain
   - Ownship Geometric Altitude
+  - typed Basic/Long pass-through payload segmentation
+    - 4-byte UAT ADS-B header
+    - 13-byte State Vector
+    - 12-byte Mode Status for long payloads
+    - 5-byte Auxiliary State Vector for long payloads
 - ForeFlight extension messages
   - ID message (`0x65/0x00`)
   - AHRS message (`0x65/0x01`)
@@ -67,7 +72,7 @@ This crate supports:
 The Garmin ICD explicitly defers some nested payload details to RTCA documents and the FAA FIS-B product registry. This crate keeps those areas usable without inventing undocumented layouts:
 
 - The 8-byte UAT-specific header is preserved as typed raw bytes because the provided Garmin text references DO-282 for its internal bit layout.
-- Basic and Long ADS-B pass-through payloads are preserved as fixed raw payloads because their internal format is also defined by DO-282 rather than by the supplied Garmin text.
+- Basic and Long ADS-B pass-through payloads are structurally segmented into their documented header/state/mode/aux sections, but the bit-level decoding of those inner fields still requires DO-282.
 - NEXRAD block reference internals are preserved as the raw 3-byte indicator because the Garmin text does not reproduce the full Appendix D bit definition.
 - NEXRAD payload shapes from the Garmin sample data that are not fully specified in the document are preserved raw rather than guessed.
 
@@ -200,3 +205,12 @@ Session files are plain text with one UDP datagram per line:
 cargo fmt --check
 cargo test
 ```
+
+## Remaining gaps from the available material
+
+- `3.6`: bit-level decoding of State Vector, Mode Status, and Auxiliary State Vector fields still needs the RTCA `DO-282` formulas.
+- `4.1.1`: the 8-byte UAT-specific uplink header bit layout is still deferred by the Garmin ICD to `DO-282`.
+- `4.3`: optional APDU fields and segmentation remain only partially described in the supplied material.
+- `4.4` and `4.5`: additional FIS-B products still require the FAA product registry definitions.
+- `5.1`: exact NEXRAD geo block-reference semantics remain external-spec dependent.
+- `5.2`: exact exhaustive DLAC Appendix K coverage is still not guaranteed without the referenced RTCA appendix.
