@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
@@ -10,6 +11,7 @@ use gdl90::message::{
     AddressType, Heartbeat, HeartbeatStatus, Message, OwnshipGeometricAltitude, TargetAlertStatus,
     TargetMisc, TargetReport, TrackType, VerticalFigureOfMerit,
 };
+use gdl90::session::{RecordedDatagram, append_datagram, decode_hex, read_datagram_file};
 use gdl90::transport::{
     FOREFLIGHT_DISCOVERY_PORT, FOREFLIGHT_GDL90_PORT, UdpGdl90Receiver, UdpGdl90Sender,
     discover_foreflight_once,
@@ -27,17 +29,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match args.next().as_deref() {
         Some("decode-frame") => {
             let hex = require_arg(args.next(), "hex frame")?;
-            let bytes = decode_hex(&hex)?;
+            let bytes = decode_hex(&hex).map_err(boxed_string_error)?;
             let clear = gdl90::frame::decode_frame(&bytes)?;
             let message = Message::decode(&clear)?;
             println!("{message:#?}");
         }
         Some("decode-stream") => {
             let hex = require_arg(args.next(), "hex stream")?;
-            let bytes = decode_hex(&hex)?;
+            let bytes = decode_hex(&hex).map_err(boxed_string_error)?;
             let mut decoder = gdl90::FrameMessageDecoder::new();
             for result in decoder.push(&bytes) {
                 println!("{:#?}", result?);
+            }
+        }
+        Some("decode-file") => {
+            let path = PathBuf::from(require_arg(args.next(), "session file")?);
+            let datagrams = read_datagram_file(&path)?;
+            for (index, datagram) in datagrams.iter().enumerate() {
+                println!(
+                    "datagram {} delay={:?} bytes={}",
+                    index + 1,
+                    datagram.delay_ms,
+                    datagram.bytes.len()
+                );
+                for message in datagram.decode_messages() {
+                    match message {
+                        Ok(message) => println!("{message:#?}"),
+                        Err(error) => println!("decode error: {error}"),
+                    }
+                }
             }
         }
         Some("listen") => {
@@ -78,6 +98,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        Some("capture") => {
+            let bind = args
+                .next()
+                .unwrap_or_else(|| format!("0.0.0.0:{FOREFLIGHT_GDL90_PORT}"));
+            let output = PathBuf::from(require_arg(args.next(), "output file")?);
+            let count = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()?
+                .unwrap_or(0);
+
+            let mut receiver = UdpGdl90Receiver::bind(&bind)?;
+            println!(
+                "capturing on {} to {}",
+                receiver.local_addr()?,
+                output.display()
+            );
+            let mut seen = 0usize;
+            loop {
+                let datagram = receiver.receive()?;
+                append_datagram(
+                    &output,
+                    &RecordedDatagram {
+                        delay_ms: None,
+                        bytes: datagram.bytes,
+                    },
+                )?;
+                seen += 1;
+                println!("captured datagram {seen} from {}", datagram.source);
+                if count != 0 && seen >= count {
+                    break;
+                }
+            }
+        }
         Some("send-demo") => {
             let target = require_arg(args.next(), "target host:port")?;
             let count = args
@@ -102,6 +156,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 thread::sleep(Duration::from_millis(interval_ms));
             }
         }
+        Some("replay-file") => {
+            let path = PathBuf::from(require_arg(args.next(), "session file")?);
+            let target = require_arg(args.next(), "target host:port")?;
+            let default_interval_ms = args
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()?
+                .unwrap_or(0);
+            let datagrams = read_datagram_file(&path)?;
+            let sender = UdpGdl90Sender::bind("0.0.0.0:0", &target)?;
+            println!(
+                "replaying {} datagrams from {} to {}",
+                datagrams.len(),
+                path.display(),
+                target
+            );
+            let mut first = true;
+            for datagram in datagrams {
+                let delay_ms = if first {
+                    datagram.delay_ms.unwrap_or(0)
+                } else {
+                    datagram.delay_ms.unwrap_or(default_interval_ms)
+                };
+                if delay_ms != 0 {
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+                sender.send_frame(&datagram.bytes)?;
+                first = false;
+            }
+        }
         _ => print_usage(),
     }
 
@@ -112,26 +196,8 @@ fn require_arg(value: Option<String>, name: &'static str) -> Result<String, Stri
     value.ok_or_else(|| format!("missing required argument: {name}"))
 }
 
-fn decode_hex(input: &str) -> Result<Vec<u8>, String> {
-    let filtered = input
-        .chars()
-        .filter(|ch| !ch.is_ascii_whitespace() && *ch != ':' && *ch != '-')
-        .collect::<String>();
-    if filtered.len() % 2 != 0 {
-        return Err("hex input must contain an even number of digits".to_string());
-    }
-
-    let mut out = Vec::with_capacity(filtered.len() / 2);
-    let bytes = filtered.as_bytes();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        let pair =
-            std::str::from_utf8(&bytes[index..index + 2]).map_err(|error| error.to_string())?;
-        let value = u8::from_str_radix(pair, 16).map_err(|error| error.to_string())?;
-        out.push(value);
-        index += 2;
-    }
-    Ok(out)
+fn boxed_string_error(error: String) -> Box<dyn std::error::Error> {
+    error.into()
 }
 
 fn demo_messages(tick: u32) -> Vec<Message> {
@@ -214,7 +280,10 @@ fn print_usage() {
     println!("commands:");
     println!("  decode-frame <hex-frame>");
     println!("  decode-stream <hex-stream>");
+    println!("  decode-file <session-file>");
     println!("  listen [bind-addr]");
     println!("  discover [bind-addr] [timeout-seconds]");
+    println!("  capture [bind-addr] <output-file> [count]");
     println!("  send-demo <target-host:port> [count] [interval-ms]");
+    println!("  replay-file <session-file> <target-host:port> [default-interval-ms]");
 }

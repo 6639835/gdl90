@@ -29,6 +29,11 @@ This crate supports:
   - send framed GDL90 datagrams
   - receive and decode UDP datagrams
   - discover ForeFlight targets from the port 63093 announcement
+- Session tooling
+  - read and write recorded UDP datagram files
+  - decode saved sessions into messages
+  - capture live UDP traffic to fixtures
+  - replay fixtures to a target
 - Uplink payload parsing for the structures documented in sections 4 and 5
   - UAT uplink payload container
   - Information Frames
@@ -58,6 +63,7 @@ src/
   error.rs        Shared error type
   frame.rs        CRC, byte stuffing, frame encoder/decoder, stream decoder
   message.rs      Standard GDL90 message models and binary encode/decode
+  session.rs      Recorded datagram files, hex parsing, and replay helpers
   transport.rs    UDP send/receive helpers and ForeFlight discovery support
   uplink.rs       UAT uplink payloads, I-frames, APDUs, DLAC text, NEXRAD blocks
   foreflight.rs   ForeFlight extension messages
@@ -69,6 +75,7 @@ examples/
   foreflight.rs   ForeFlight device and AHRS examples
 tests/
   protocol.rs     Integration coverage for standard, ForeFlight, uplink, framing, and control paths
+  session.rs      Integration coverage for recorded session files
 ```
 
 ## Quick start
@@ -117,18 +124,39 @@ The crate now includes a `gdl90` CLI:
 ```bash
 cargo run --bin gdl90 -- decode-frame 7E008141DBD00802B38B7E
 cargo run --bin gdl90 -- decode-stream 7E008141DBD00802B38B7E7E0B00C88008787E
+cargo run --bin gdl90 -- decode-file tests/data/demo_session.txt
 cargo run --bin gdl90 -- discover
 cargo run --bin gdl90 -- listen 0.0.0.0:4000
+cargo run --bin gdl90 -- capture 0.0.0.0:4000 session.txt 100
 cargo run --bin gdl90 -- send-demo 192.168.1.50:4000 10 1000
+cargo run --bin gdl90 -- replay-file tests/data/demo_session.txt 192.168.1.50:4000 250
 ```
 
 Commands:
 
 - `decode-frame`: decode one framed GDL90 message from hex
 - `decode-stream`: decode one or more back-to-back framed messages from hex
+- `decode-file`: decode every recorded datagram in a session file
 - `discover`: wait for a ForeFlight UDP discovery broadcast
 - `listen`: listen for UDP GDL90 traffic and print decoded messages
+- `capture`: record live UDP datagrams into a session file
 - `send-demo`: send a recurring demo heartbeat/ownship/geo-alt/ForeFlight set to a target
+- `replay-file`: replay a recorded session file to a UDP target
+
+## Session File Format
+
+Session files are plain text with one UDP datagram per line:
+
+```text
+# comment
+7E008141DBD00802B38B7E
+@250 7E0B00C88008787E
+```
+
+- Blank lines and lines starting with `#` are ignored.
+- Hex separators such as spaces, `:` and `-` are accepted.
+- `@<ms> <hex>` adds an optional replay delay before that datagram.
+- Each line stores a full UDP datagram, which may contain one or more framed GDL90 messages.
 
 ## Validation
 
