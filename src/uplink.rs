@@ -394,6 +394,20 @@ pub struct GenericTextApdu {
 }
 
 impl GenericTextApdu {
+    fn validate_header(header: ApduHeader) -> Result<()> {
+        if header.product_id != GENERIC_TEXT_PRODUCT_ID {
+            return Err(Gdl90Error::InvalidField {
+                field: "product id",
+                details: format!(
+                    "expected generic text product id {GENERIC_TEXT_PRODUCT_ID}, got {}",
+                    header.product_id
+                ),
+            });
+        }
+        header.validate_minimal_uat()?;
+        Ok(())
+    }
+
     pub fn from_apdu(apdu: &Apdu) -> Result<Self> {
         let text = decode_dlac(&apdu.payload);
         let mut records = Vec::new();
@@ -410,6 +424,50 @@ impl GenericTextApdu {
         };
         decoded.validate()?;
         Ok(decoded)
+    }
+
+    pub fn pack_records(header: ApduHeader, records: &[GenericTextRecord]) -> Result<Vec<Self>> {
+        Self::validate_header(header)?;
+        if records.is_empty() {
+            return Err(Gdl90Error::InvalidField {
+                field: "generic text APDU",
+                details: "must contain at least one text record".to_string(),
+            });
+        }
+
+        let mut apdus = Vec::new();
+        let mut current_records = Vec::new();
+        let mut current_len = 0usize;
+
+        for record in records {
+            record.validate_metar_taf_composition()?;
+            let encoded_len = record.encoded_len()?;
+
+            if !current_records.is_empty() && current_len + encoded_len > MAX_APDU_PAYLOAD_LEN {
+                apdus.push(Self {
+                    header,
+                    records: current_records,
+                });
+                current_records = Vec::new();
+                current_len = 0;
+            }
+
+            current_records.push(record.clone());
+            current_len += encoded_len;
+        }
+
+        if !current_records.is_empty() {
+            apdus.push(Self {
+                header,
+                records: current_records,
+            });
+        }
+
+        for apdu in &apdus {
+            apdu.validate()?;
+        }
+
+        Ok(apdus)
     }
 
     pub fn to_apdu(&self) -> Result<Apdu> {
@@ -429,16 +487,7 @@ impl GenericTextApdu {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.header.product_id != GENERIC_TEXT_PRODUCT_ID {
-            return Err(Gdl90Error::InvalidField {
-                field: "product id",
-                details: format!(
-                    "expected generic text product id {GENERIC_TEXT_PRODUCT_ID}, got {}",
-                    self.header.product_id
-                ),
-            });
-        }
-        self.header.validate_minimal_uat()?;
+        Self::validate_header(self.header)?;
         if self.records.is_empty() {
             return Err(Gdl90Error::InvalidField {
                 field: "generic text APDU",
@@ -641,6 +690,10 @@ impl GenericTextRecord {
 
         Ok(())
     }
+
+    pub fn encoded_len(&self) -> Result<usize> {
+        encoded_generic_text_record_len(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -819,6 +872,18 @@ impl NexradBlock {
             .collect()
     }
 
+    pub fn decode_intensity_bins(&self) -> Result<Vec<NexradIntensity>> {
+        self.decode_bins()
+            .into_iter()
+            .map(NexradIntensity::from_encoded)
+            .collect()
+    }
+
+    pub fn decode_intensity_rows(&self) -> Result<Vec<Vec<NexradIntensity>>> {
+        let bins = self.decode_intensity_bins()?;
+        Ok(bins.chunks(32).map(|row| row.to_vec()).collect())
+    }
+
     pub fn from_bins(block_reference_indicator: [u8; 3], bins: &[u8; 128]) -> Result<Self> {
         if bins.iter().all(|value| *value == 0) {
             return Ok(Self::Empty {
@@ -857,6 +922,79 @@ impl NexradBlock {
 pub struct NexradRun {
     pub count: u8,
     pub intensity: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NexradIntensity {
+    Value0,
+    Value1,
+    Value2,
+    Value3,
+    Value4,
+    Value5,
+    Value6,
+    Value7,
+}
+
+impl NexradIntensity {
+    pub fn from_encoded(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Value0),
+            1 => Ok(Self::Value1),
+            2 => Ok(Self::Value2),
+            3 => Ok(Self::Value3),
+            4 => Ok(Self::Value4),
+            5 => Ok(Self::Value5),
+            6 => Ok(Self::Value6),
+            7 => Ok(Self::Value7),
+            _ => Err(Gdl90Error::InvalidField {
+                field: "NEXRAD intensity",
+                details: format!("{value} is outside 0..=7"),
+            }),
+        }
+    }
+
+    pub fn encoded_value(self) -> u8 {
+        match self {
+            Self::Value0 => 0,
+            Self::Value1 => 1,
+            Self::Value2 => 2,
+            Self::Value3 => 3,
+            Self::Value4 => 4,
+            Self::Value5 => 5,
+            Self::Value6 => 6,
+            Self::Value7 => 7,
+        }
+    }
+
+    pub fn reflectivity_range(self) -> &'static str {
+        match self {
+            Self::Value0 => "dBz < 5",
+            Self::Value1 => "5 <= dBz <= 20",
+            Self::Value2 => "20 <= dBz <= 30",
+            Self::Value3 => "30 <= dBz <= 40",
+            Self::Value4 => "40 <= dBz <= 45",
+            Self::Value5 => "45 <= dBz <= 50",
+            Self::Value6 => "50 <= dBz <= 55",
+            Self::Value7 => "55 <= dBz",
+        }
+    }
+
+    pub fn weather_condition(self) -> &'static str {
+        match self {
+            Self::Value0 | Self::Value1 => "Background",
+            Self::Value2 => "VIP 1",
+            Self::Value3 => "VIP 2",
+            Self::Value4 => "VIP 3",
+            Self::Value5 => "VIP 4",
+            Self::Value6 => "VIP 5",
+            Self::Value7 => "VIP 6",
+        }
+    }
+
+    pub fn is_background(self) -> bool {
+        matches!(self, Self::Value0 | Self::Value1)
+    }
 }
 
 fn decode_dlac(bytes: &[u8]) -> String {

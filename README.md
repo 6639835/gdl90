@@ -60,8 +60,10 @@ This crate supports:
   - explicit rejection of unsupported APDU descriptor options and segmentation
   - typed FIS-B product routing
   - Generic textual DLAC APDUs
+  - whole-record Generic Text APDU packing up to the documented 418-byte payload limit
   - METAR/TAF record composition validation, including `NIL=` handling
   - NEXRAD run-length block payloads
+  - typed NEXRAD intensity semantics from Table 20
   - Garmin sample application data field decoding for text and NEXRAD examples
 - Control-panel ASCII messages from section 6
   - Call Sign

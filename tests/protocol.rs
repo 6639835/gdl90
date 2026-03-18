@@ -15,8 +15,8 @@ use gdl90::message::{
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
     ApduHeader, FisbProduct, GenericTextApdu, GenericTextField, GenericTextRecord,
-    GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, TextQualifier,
-    UatUplinkPayload,
+    GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, NexradIntensity,
+    TextQualifier, UatUplinkPayload,
 };
 
 #[test]
@@ -321,6 +321,63 @@ fn generic_text_and_nexrad_validate_documented_minimal_headers() {
     assert!(
         matches!(nexrad_error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU product descriptor options")
     );
+}
+
+#[test]
+fn generic_text_pack_records_keeps_whole_records_within_apdu_limit() {
+    let header = ApduHeader {
+        application_flag: false,
+        geo_flag: false,
+        product_file_flag: false,
+        product_id: 413,
+        segmentation_flag: false,
+        time_option: 0,
+        hours: 0,
+        minutes: 0,
+    };
+    let make_record = |location: &str, text: &str| GenericTextRecord {
+        kind: GenericTextRecordKind::Taf,
+        record_type: "TAF".to_string(),
+        location: GenericTextField::Text(location.to_string()),
+        record_time: GenericTextField::Text("260900Z".to_string()),
+        qualifier: None,
+        text: text.to_string(),
+    };
+
+    let records = vec![
+        make_record("KSFO", &"A".repeat(180)),
+        make_record("KOAK", &"B".repeat(180)),
+        make_record("KSQL", &"C".repeat(180)),
+    ];
+
+    let apdus = GenericTextApdu::pack_records(header, &records).unwrap();
+    assert_eq!(apdus.len(), 2);
+    assert_eq!(apdus[0].records.len(), 2);
+    assert_eq!(apdus[1].records.len(), 1);
+
+    for apdu in apdus {
+        let encoded = apdu.to_apdu().unwrap();
+        assert!(encoded.payload.len() <= 418);
+    }
+}
+
+#[test]
+fn nexrad_intensity_rows_expose_table_20_semantics() {
+    let mut bins = [0u8; 128];
+    bins[0] = 0;
+    bins[1] = 1;
+    bins[2] = 2;
+    bins[3] = 7;
+    let block = NexradBlock::from_bins([0x84, 0xA5, 0x70], &bins).unwrap();
+
+    let rows = block.decode_intensity_rows().unwrap();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0][0], NexradIntensity::Value0);
+    assert_eq!(rows[0][1], NexradIntensity::Value1);
+    assert_eq!(rows[0][2].weather_condition(), "VIP 1");
+    assert_eq!(rows[0][3].weather_condition(), "VIP 6");
+    assert_eq!(rows[0][0].reflectivity_range(), "dBz < 5");
+    assert!(rows[0][1].is_background());
 }
 
 #[test]

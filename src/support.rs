@@ -177,13 +177,13 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             section: "5.1",
             title: "NEXRAD Global Block Representation",
             state: SupportState::Partial,
-            notes: "Run-length payloads and sample fields decode; exact geo block-reference semantics remain external-spec dependent.",
+            notes: "Run-length payloads, typed intensity semantics from Table 20, and sample fields decode; exact geo block-reference semantics remain external-spec dependent.",
         },
         SectionSupportEntry {
             section: "5.2",
             title: "Generic Textual Data Product",
             state: SupportState::Partial,
-            notes: "Generic Text records, DLAC packing, and METAR/TAF composition are supported; exact full Appendix K DLAC coverage is not guaranteed.",
+            notes: "Generic Text records, DLAC packing, record-to-APDU packing, and METAR/TAF composition are supported; exact full Appendix K DLAC coverage is not guaranteed.",
         },
         SectionSupportEntry {
             section: "6.1",
