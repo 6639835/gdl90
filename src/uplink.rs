@@ -1,0 +1,634 @@
+use crate::error::{Gdl90Error, Result};
+pub const UAT_UPLINK_PAYLOAD_LEN: usize = 432;
+pub const UAT_HEADER_LEN: usize = 8;
+pub const APPLICATION_DATA_LEN: usize = 424;
+pub const GENERIC_TEXT_PRODUCT_ID: u16 = 413;
+pub const NEXRAD_PRODUCT_ID: u16 = 63;
+pub const DLAC_RECORD_SEPARATOR: char = '\u{001E}';
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UatUplinkPayload {
+    pub header: [u8; UAT_HEADER_LEN],
+    pub application_data: [u8; APPLICATION_DATA_LEN],
+}
+
+impl UatUplinkPayload {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != UAT_UPLINK_PAYLOAD_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "UAT uplink payload",
+                expected: "432 bytes",
+                actual: bytes.len(),
+            });
+        }
+
+        let mut header = [0u8; UAT_HEADER_LEN];
+        header.copy_from_slice(&bytes[..UAT_HEADER_LEN]);
+
+        let mut application_data = [0u8; APPLICATION_DATA_LEN];
+        application_data.copy_from_slice(&bytes[UAT_HEADER_LEN..]);
+
+        Ok(Self {
+            header,
+            application_data,
+        })
+    }
+
+    pub fn as_bytes(&self) -> [u8; UAT_UPLINK_PAYLOAD_LEN] {
+        let mut out = [0u8; UAT_UPLINK_PAYLOAD_LEN];
+        out[..UAT_HEADER_LEN].copy_from_slice(&self.header);
+        out[UAT_HEADER_LEN..].copy_from_slice(&self.application_data);
+        out
+    }
+
+    pub fn information_frames(&self) -> Result<Vec<InformationFrame>> {
+        let mut frames = Vec::new();
+        let mut offset = 0usize;
+
+        while offset + 2 <= self.application_data.len() {
+            let first = self.application_data[offset];
+            let second = self.application_data[offset + 1];
+            let length = ((first as usize) << 1) | ((second as usize) >> 7);
+            if length == 0 {
+                break;
+            }
+
+            let total = length + 2;
+            if offset + total > self.application_data.len() {
+                return Err(Gdl90Error::InvalidField {
+                    field: "I-Frame length",
+                    details: format!(
+                        "frame starting at byte {offset} overruns 424-byte application data"
+                    ),
+                });
+            }
+
+            let reserved = (second >> 4) & 0x07;
+            let frame_type = FrameType::from_raw(second & 0x0F);
+            let data = self.application_data[offset + 2..offset + total].to_vec();
+
+            frames.push(InformationFrame {
+                reserved,
+                frame_type,
+                data,
+            });
+            offset += total;
+        }
+
+        Ok(frames)
+    }
+
+    pub fn from_information_frames(
+        header: [u8; UAT_HEADER_LEN],
+        frames: &[InformationFrame],
+    ) -> Result<Self> {
+        let mut application_data = [0u8; APPLICATION_DATA_LEN];
+        let mut offset = 0usize;
+
+        for frame in frames {
+            let length = frame.data.len();
+            if length > 422 {
+                return Err(Gdl90Error::InvalidField {
+                    field: "I-Frame data length",
+                    details: format!("{length} exceeds 422-byte maximum"),
+                });
+            }
+
+            let total = length + 2;
+            if offset + total > APPLICATION_DATA_LEN {
+                return Err(Gdl90Error::InvalidField {
+                    field: "application data",
+                    details: "frames do not fit in the 424-byte application area".to_string(),
+                });
+            }
+
+            application_data[offset] = ((length >> 1) & 0xFF) as u8;
+            application_data[offset + 1] = (((length & 0x01) as u8) << 7)
+                | ((frame.reserved & 0x07) << 4)
+                | frame.frame_type.raw();
+            application_data[offset + 2..offset + total].copy_from_slice(&frame.data);
+            offset += total;
+        }
+
+        Ok(Self {
+            header,
+            application_data,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameType {
+    FisBApdu,
+    Reserved(u8),
+    Developmental,
+}
+
+impl FrameType {
+    pub fn from_raw(value: u8) -> Self {
+        match value {
+            0x0 => Self::FisBApdu,
+            0xF => Self::Developmental,
+            other => Self::Reserved(other),
+        }
+    }
+
+    pub fn raw(self) -> u8 {
+        match self {
+            Self::FisBApdu => 0x0,
+            Self::Developmental => 0xF,
+            Self::Reserved(value) => value & 0x0F,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InformationFrame {
+    pub reserved: u8,
+    pub frame_type: FrameType,
+    pub data: Vec<u8>,
+}
+
+impl InformationFrame {
+    pub fn apdu(&self) -> Result<Apdu> {
+        if self.frame_type != FrameType::FisBApdu {
+            return Err(Gdl90Error::InvalidField {
+                field: "frame type",
+                details: "frame does not contain a FIS-B APDU".to_string(),
+            });
+        }
+        Apdu::from_bytes(&self.data)
+    }
+
+    pub fn from_apdu(apdu: &Apdu) -> Self {
+        Self {
+            reserved: 0,
+            frame_type: FrameType::FisBApdu,
+            data: apdu.to_bytes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Apdu {
+    pub header: ApduHeader,
+    pub payload: Vec<u8>,
+}
+
+impl Apdu {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 4 {
+            return Err(Gdl90Error::InvalidLength {
+                context: "APDU",
+                expected: "at least 4 bytes",
+                actual: bytes.len(),
+            });
+        }
+
+        let mut header = [0u8; 4];
+        header.copy_from_slice(&bytes[..4]);
+        Ok(Self {
+            header: ApduHeader::from_bytes(header),
+            payload: bytes[4..].to_vec(),
+        })
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + self.payload.len());
+        out.extend_from_slice(&self.header.to_bytes());
+        out.extend_from_slice(&self.payload);
+        out
+    }
+
+    pub fn as_generic_text(&self) -> Result<GenericTextApdu> {
+        if self.header.product_id != GENERIC_TEXT_PRODUCT_ID {
+            return Err(Gdl90Error::InvalidField {
+                field: "product id",
+                details: format!(
+                    "expected generic text product id {GENERIC_TEXT_PRODUCT_ID}, got {}",
+                    self.header.product_id
+                ),
+            });
+        }
+        GenericTextApdu::from_apdu(self)
+    }
+
+    pub fn as_nexrad(&self) -> Result<NexradApdu> {
+        if self.header.product_id != NEXRAD_PRODUCT_ID {
+            return Err(Gdl90Error::InvalidField {
+                field: "product id",
+                details: format!(
+                    "expected NEXRAD product id {NEXRAD_PRODUCT_ID}, got {}",
+                    self.header.product_id
+                ),
+            });
+        }
+        NexradApdu::from_apdu(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApduHeader {
+    pub application_flag: bool,
+    pub geo_flag: bool,
+    pub product_file_flag: bool,
+    pub product_id: u16,
+    pub segmentation_flag: bool,
+    pub time_option: u8,
+    pub hours: u8,
+    pub minutes: u8,
+}
+
+impl ApduHeader {
+    pub fn from_bytes(bytes: [u8; 4]) -> Self {
+        let word = u32::from_be_bytes(bytes);
+        Self {
+            application_flag: ((word >> 31) & 0x01) != 0,
+            geo_flag: ((word >> 30) & 0x01) != 0,
+            product_file_flag: ((word >> 29) & 0x01) != 0,
+            product_id: ((word >> 18) & 0x07FF) as u16,
+            segmentation_flag: ((word >> 17) & 0x01) != 0,
+            time_option: ((word >> 15) & 0x03) as u8,
+            hours: ((word >> 10) & 0x1F) as u8,
+            minutes: ((word >> 4) & 0x3F) as u8,
+        }
+    }
+
+    pub fn to_bytes(self) -> [u8; 4] {
+        let mut word = 0u32;
+        word |= (self.application_flag as u32) << 31;
+        word |= (self.geo_flag as u32) << 30;
+        word |= (self.product_file_flag as u32) << 29;
+        word |= (u32::from(self.product_id & 0x07FF)) << 18;
+        word |= (self.segmentation_flag as u32) << 17;
+        word |= (u32::from(self.time_option & 0x03)) << 15;
+        word |= (u32::from(self.hours & 0x1F)) << 10;
+        word |= (u32::from(self.minutes & 0x3F)) << 4;
+        word.to_be_bytes()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericTextApdu {
+    pub header: ApduHeader,
+    pub records: Vec<GenericTextRecord>,
+}
+
+impl GenericTextApdu {
+    pub fn from_apdu(apdu: &Apdu) -> Result<Self> {
+        let text = decode_dlac(&apdu.payload);
+        let mut records = Vec::new();
+        for raw in text.split(DLAC_RECORD_SEPARATOR) {
+            let trimmed = raw.trim_matches('\0');
+            if trimmed.is_empty() {
+                continue;
+            }
+            records.push(GenericTextRecord::parse(trimmed)?);
+        }
+        Ok(Self {
+            header: apdu.header,
+            records,
+        })
+    }
+
+    pub fn to_apdu(&self) -> Result<Apdu> {
+        let mut text = String::new();
+        for record in &self.records {
+            text.push_str(&record.render());
+            text.push(DLAC_RECORD_SEPARATOR);
+        }
+        Ok(Apdu {
+            header: self.header,
+            payload: encode_dlac(&text)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextQualifier {
+    SpecialReport,
+    Amendment,
+}
+
+impl TextQualifier {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SpecialReport => "SP",
+            Self::Amendment => "AM",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericTextRecord {
+    pub record_type: String,
+    pub location: String,
+    pub record_time: String,
+    pub qualifier: Option<TextQualifier>,
+    pub text: String,
+}
+
+impl GenericTextRecord {
+    pub fn parse(raw: &str) -> Result<Self> {
+        let mut parts = raw.splitn(5, ' ');
+        let record_type = parts
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or(Gdl90Error::InvalidField {
+                field: "generic text record",
+                details: "missing record type".to_string(),
+            })?
+            .to_string();
+        let location = parts
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or(Gdl90Error::InvalidField {
+                field: "generic text record",
+                details: "missing location".to_string(),
+            })?
+            .to_string();
+        let record_time = parts
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or(Gdl90Error::InvalidField {
+                field: "generic text record",
+                details: "missing record time".to_string(),
+            })?
+            .to_string();
+
+        let fourth = parts.next().ok_or(Gdl90Error::InvalidField {
+            field: "generic text record",
+            details: "missing report body".to_string(),
+        })?;
+
+        let (qualifier, text) = match fourth {
+            "SP" => (
+                Some(TextQualifier::SpecialReport),
+                parts.next().unwrap_or_default().to_string(),
+            ),
+            "AM" => (
+                Some(TextQualifier::Amendment),
+                parts.next().unwrap_or_default().to_string(),
+            ),
+            _ => {
+                let remainder = if let Some(rest) = parts.next() {
+                    format!("{fourth} {rest}")
+                } else {
+                    fourth.to_string()
+                };
+                (None, remainder)
+            }
+        };
+
+        Ok(Self {
+            record_type,
+            location,
+            record_time,
+            qualifier,
+            text,
+        })
+    }
+
+    pub fn render(&self) -> String {
+        let mut out = format!(
+            "{} {} {}",
+            self.record_type, self.location, self.record_time
+        );
+        if let Some(qualifier) = self.qualifier {
+            out.push(' ');
+            out.push_str(qualifier.as_str());
+        }
+        out.push(' ');
+        out.push_str(&self.text);
+        out
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NexradApdu {
+    pub header: ApduHeader,
+    pub block: NexradBlock,
+}
+
+impl NexradApdu {
+    pub fn from_apdu(apdu: &Apdu) -> Result<Self> {
+        Ok(Self {
+            header: apdu.header,
+            block: NexradBlock::from_payload(&apdu.payload)?,
+        })
+    }
+
+    pub fn to_apdu(&self) -> Apdu {
+        Apdu {
+            header: self.header,
+            payload: self.block.to_payload(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NexradBlock {
+    Empty {
+        block_reference_indicator: [u8; 3],
+    },
+    RunLengthEncoded {
+        block_reference_indicator: [u8; 3],
+        runs: Vec<NexradRun>,
+    },
+}
+
+impl NexradBlock {
+    pub fn from_payload(payload: &[u8]) -> Result<Self> {
+        if payload.len() < 3 {
+            return Err(Gdl90Error::InvalidLength {
+                context: "NEXRAD APDU payload",
+                expected: "at least 3 bytes",
+                actual: payload.len(),
+            });
+        }
+
+        let mut reference = [0u8; 3];
+        reference.copy_from_slice(&payload[..3]);
+        if payload.len() == 3 {
+            return Ok(Self::Empty {
+                block_reference_indicator: reference,
+            });
+        }
+
+        let mut runs = Vec::with_capacity(payload.len() - 3);
+        for byte in &payload[3..] {
+            runs.push(NexradRun {
+                count: (byte >> 3) + 1,
+                intensity: byte & 0x07,
+            });
+        }
+
+        let total: usize = runs.iter().map(|run| run.count as usize).sum();
+        if total != 128 {
+            return Err(Gdl90Error::InvalidField {
+                field: "NEXRAD run-length payload",
+                details: format!("decoded run count is {total}, expected 128 bins"),
+            });
+        }
+
+        Ok(Self::RunLengthEncoded {
+            block_reference_indicator: reference,
+            runs,
+        })
+    }
+
+    pub fn to_payload(&self) -> Vec<u8> {
+        match self {
+            Self::Empty {
+                block_reference_indicator,
+            } => block_reference_indicator.to_vec(),
+            Self::RunLengthEncoded {
+                block_reference_indicator,
+                runs,
+            } => {
+                let mut out = Vec::with_capacity(3 + runs.len());
+                out.extend_from_slice(block_reference_indicator);
+                for run in runs {
+                    out.push(((run.count - 1) << 3) | (run.intensity & 0x07));
+                }
+                out
+            }
+        }
+    }
+
+    pub fn decode_bins(&self) -> Vec<u8> {
+        match self {
+            Self::Empty { .. } => vec![0u8; 128],
+            Self::RunLengthEncoded { runs, .. } => {
+                let mut bins = Vec::with_capacity(128);
+                for run in runs {
+                    bins.extend(std::iter::repeat_n(run.intensity, run.count as usize));
+                }
+                bins
+            }
+        }
+    }
+
+    pub fn from_bins(block_reference_indicator: [u8; 3], bins: &[u8; 128]) -> Result<Self> {
+        if bins.iter().all(|value| *value == 0) {
+            return Ok(Self::Empty {
+                block_reference_indicator,
+            });
+        }
+
+        let mut runs = Vec::new();
+        let mut current = bins[0];
+        let mut count = 1u8;
+        for value in bins.iter().skip(1) {
+            if *value == current && count < 32 {
+                count += 1;
+            } else {
+                runs.push(NexradRun {
+                    count,
+                    intensity: current,
+                });
+                current = *value;
+                count = 1;
+            }
+        }
+        runs.push(NexradRun {
+            count,
+            intensity: current,
+        });
+
+        Ok(Self::RunLengthEncoded {
+            block_reference_indicator,
+            runs,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NexradRun {
+    pub count: u8,
+    pub intensity: u8,
+}
+
+fn decode_dlac(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let word = match chunk.len() {
+            3 => u32::from_be_bytes([0, chunk[0], chunk[1], chunk[2]]),
+            2 => u32::from_be_bytes([0, 0, chunk[0], chunk[1]]) << 8,
+            1 => u32::from_be_bytes([0, 0, 0, chunk[0]]) << 16,
+            _ => unreachable!(),
+        };
+
+        let count = match chunk.len() {
+            3 => 4,
+            2 => 2,
+            1 => 1,
+            _ => 0,
+        };
+
+        for index in 0..count {
+            let shift = 18 - (index * 6);
+            let value = ((word >> shift) & 0x3F) as u8;
+            out.push(decode_dlac_char(value));
+        }
+    }
+    out
+}
+
+fn encode_dlac(text: &str) -> Result<Vec<u8>> {
+    let mut values = Vec::with_capacity(text.len());
+    for ch in text.chars() {
+        values.push(encode_dlac_char(ch)?);
+    }
+
+    let mut out = Vec::with_capacity((values.len() * 6).div_ceil(8));
+    let mut index = 0usize;
+    while index < values.len() {
+        let a = values[index];
+        let b = values.get(index + 1).copied().unwrap_or(0);
+        let c = values.get(index + 2).copied().unwrap_or(0);
+        let d = values.get(index + 3).copied().unwrap_or(0);
+        let word = ((a as u32) << 18) | ((b as u32) << 12) | ((c as u32) << 6) | d as u32;
+        out.push(((word >> 16) & 0xFF) as u8);
+        if index + 1 < values.len() {
+            out.push(((word >> 8) & 0xFF) as u8);
+        }
+        if index + 2 < values.len() {
+            out.push((word & 0xFF) as u8);
+        }
+        index += 4;
+    }
+    Ok(out)
+}
+
+fn decode_dlac_char(value: u8) -> char {
+    match value {
+        0 => '\0',
+        1..=26 => (b'A' + (value - 1)) as char,
+        27 => '\t',
+        28 => '\n',
+        29 => DLAC_RECORD_SEPARATOR,
+        30 => '\r',
+        31 => '\u{001F}',
+        32..=63 => value as char,
+        _ => unreachable!(),
+    }
+}
+
+fn encode_dlac_char(ch: char) -> Result<u8> {
+    match ch {
+        '\0' => Ok(0),
+        'A'..='Z' => Ok((ch as u8) - b'A' + 1),
+        'a'..='z' => Ok((ch as u8).to_ascii_uppercase() - b'A' + 1),
+        '\t' => Ok(27),
+        '\n' => Ok(28),
+        DLAC_RECORD_SEPARATOR => Ok(29),
+        '\r' => Ok(30),
+        '\u{001F}' => Ok(31),
+        ' '..='?' => Ok(ch as u8),
+        _ => Err(Gdl90Error::UnsupportedCharacter {
+            context: "DLAC text",
+            ch,
+        }),
+    }
+}
