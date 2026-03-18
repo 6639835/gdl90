@@ -38,6 +38,9 @@ This crate supports:
   - summarize recorded sessions
   - count decoded message types
   - validate saved datagrams and report malformed entries
+- Report/export tooling
+  - generate detailed per-datagram and per-frame reports
+  - export session reports as JSON
 - Uplink payload parsing for the structures documented in sections 4 and 5
   - UAT uplink payload container
   - Information Frames
@@ -67,6 +70,7 @@ src/
   error.rs        Shared error type
   frame.rs        CRC, byte stuffing, frame encoder/decoder, stream decoder
   message.rs      Standard GDL90 message models and binary encode/decode
+  report.rs       Detailed text and JSON reporting for recorded sessions
   session.rs      Recorded datagram files, hex parsing, and replay helpers
   analysis.rs     Session summary and validation helpers
   transport.rs    UDP send/receive helpers and ForeFlight discovery support
@@ -81,6 +85,7 @@ examples/
 tests/
   analysis.rs     Integration coverage for session analysis and validation
   protocol.rs     Integration coverage for standard, ForeFlight, uplink, framing, and control paths
+  report.rs       Integration coverage for text and JSON session reports
   session.rs      Integration coverage for recorded session files
 ```
 
@@ -131,6 +136,8 @@ The crate now includes a `gdl90` CLI:
 cargo run --bin gdl90 -- decode-frame 7E008141DBD00802B38B7E
 cargo run --bin gdl90 -- decode-stream 7E008141DBD00802B38B7E7E0B00C88008787E
 cargo run --bin gdl90 -- decode-file tests/data/demo_session.txt
+cargo run --bin gdl90 -- report-file tests/data/demo_session.txt
+cargo run --bin gdl90 -- report-file-json tests/data/demo_session.txt report.json
 cargo run --bin gdl90 -- analyze-file tests/data/demo_session.txt
 cargo run --bin gdl90 -- validate-file tests/data/demo_session.txt
 cargo run --bin gdl90 -- discover
@@ -145,6 +152,8 @@ Commands:
 - `decode-frame`: decode one framed GDL90 message from hex
 - `decode-stream`: decode one or more back-to-back framed messages from hex
 - `decode-file`: decode every recorded datagram in a session file
+- `report-file`: print a detailed per-datagram/per-frame text report
+- `report-file-json`: export the same report structure as JSON
 - `analyze-file`: print a session summary and per-message counts
 - `validate-file`: fail if any recorded datagram cannot be decoded cleanly
 - `discover`: wait for a ForeFlight UDP discovery broadcast

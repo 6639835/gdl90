@@ -13,6 +13,7 @@ mod error;
 pub mod foreflight;
 pub mod frame;
 pub mod message;
+pub mod report;
 pub mod session;
 pub mod transport;
 pub mod uplink;

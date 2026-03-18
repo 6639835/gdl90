@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
-use crate::message::Message;
+use serde::Serialize;
+
 use crate::session::RecordedDatagram;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionAnalysis {
     pub datagram_count: usize,
     pub total_bytes: usize,
@@ -22,13 +23,13 @@ impl SessionAnalysis {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DatagramIssue {
     pub datagram_index: usize,
     pub details: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionValidation {
     pub datagram_count: usize,
     pub valid_datagram_count: usize,
@@ -120,28 +121,5 @@ pub fn validate_datagrams(datagrams: &[RecordedDatagram]) -> SessionValidation {
         valid_datagram_count,
         invalid_datagram_count: datagrams.len().saturating_sub(valid_datagram_count),
         issues,
-    }
-}
-
-trait MessageKindName {
-    fn kind_name(self) -> String;
-}
-
-impl MessageKindName for Message {
-    fn kind_name(self) -> String {
-        match self {
-            Message::Heartbeat(_) => "Heartbeat".to_string(),
-            Message::Initialization(_) => "Initialization".to_string(),
-            Message::UplinkData(_) => "UplinkData".to_string(),
-            Message::HeightAboveTerrain(_) => "HeightAboveTerrain".to_string(),
-            Message::OwnshipReport(_) => "OwnshipReport".to_string(),
-            Message::OwnshipGeometricAltitude(_) => "OwnshipGeometricAltitude".to_string(),
-            Message::TrafficReport(_) => "TrafficReport".to_string(),
-            Message::BasicReport(_) => "BasicReport".to_string(),
-            Message::LongReport(_) => "LongReport".to_string(),
-            Message::ForeFlightId(_) => "ForeFlightId".to_string(),
-            Message::ForeFlightAhrs(_) => "ForeFlightAhrs".to_string(),
-            Message::Unknown { message_id, .. } => format!("Unknown({message_id:#04x})"),
-        }
     }
 }

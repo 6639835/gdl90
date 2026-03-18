@@ -657,6 +657,74 @@ pub enum Message {
 }
 
 impl Message {
+    pub fn kind_name(&self) -> String {
+        match self {
+            Self::Heartbeat(_) => "Heartbeat".to_string(),
+            Self::Initialization(_) => "Initialization".to_string(),
+            Self::UplinkData(_) => "UplinkData".to_string(),
+            Self::HeightAboveTerrain(_) => "HeightAboveTerrain".to_string(),
+            Self::OwnshipReport(_) => "OwnshipReport".to_string(),
+            Self::OwnshipGeometricAltitude(_) => "OwnshipGeometricAltitude".to_string(),
+            Self::TrafficReport(_) => "TrafficReport".to_string(),
+            Self::BasicReport(_) => "BasicReport".to_string(),
+            Self::LongReport(_) => "LongReport".to_string(),
+            Self::ForeFlightId(_) => "ForeFlightId".to_string(),
+            Self::ForeFlightAhrs(_) => "ForeFlightAhrs".to_string(),
+            Self::Unknown { message_id, .. } => format!("Unknown({message_id:#04x})"),
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Heartbeat(message) => format!(
+                "utc={} gps_valid={} uplinks={} basic_long={}",
+                message.timestamp_seconds_since_midnight,
+                message.status.gps_position_valid,
+                message.uplink_count,
+                message.basic_and_long_count
+            ),
+            Self::Initialization(message) => format!(
+                "audio_test={} audio_inhibit={} cdti_ok={} csa_disable={}",
+                message.audio_test, message.audio_inhibit, message.cdti_ok, message.csa_disable
+            ),
+            Self::UplinkData(message) => format!(
+                "tor={:?} application_data={} bytes",
+                message.time_of_reception,
+                message.payload.application_data.len()
+            ),
+            Self::HeightAboveTerrain(message) => format!("feet={:?}", message.feet),
+            Self::OwnshipReport(message) => format_target_summary("ownship", message),
+            Self::OwnshipGeometricAltitude(message) => format!(
+                "altitude_ft={} vertical_warning={}",
+                message.altitude_feet, message.vertical_warning
+            ),
+            Self::TrafficReport(message) => format_target_summary("traffic", message),
+            Self::BasicReport(message) => format!(
+                "tor={:?} payload={} bytes",
+                message.time_of_reception,
+                message.payload.len()
+            ),
+            Self::LongReport(message) => format!(
+                "tor={:?} payload={} bytes",
+                message.time_of_reception,
+                message.payload.len()
+            ),
+            Self::ForeFlightId(message) => format!(
+                "version={} name={} long_name={}",
+                message.version, message.device_name, message.device_long_name
+            ),
+            Self::ForeFlightAhrs(message) => format!(
+                "roll={:?} pitch={:?} heading={:?}",
+                message.roll_tenths_degrees,
+                message.pitch_tenths_degrees,
+                message.heading.map(|heading| heading.tenths_degrees)
+            ),
+            Self::Unknown { message_id, data } => {
+                format!("message_id={message_id:#04x} payload={} bytes", data.len())
+            }
+        }
+    }
+
     pub fn message_id(&self) -> u8 {
         match self {
             Self::Heartbeat(_) => HEARTBEAT_MESSAGE_ID,
@@ -745,6 +813,17 @@ impl Message {
     pub fn encode_frame(&self) -> Result<Vec<u8>> {
         Ok(encode_frame(&self.encode()?))
     }
+}
+
+fn format_target_summary(label: &str, message: &TargetReport) -> String {
+    format!(
+        "{label} addr={:#08x} callsign={} lat={:.5} lon={:.5} alt_ft={:?}",
+        message.participant_address,
+        message.call_sign,
+        message.latitude_degrees,
+        message.longitude_degrees,
+        message.pressure_altitude_feet
+    )
 }
 
 #[derive(Debug, Default, Clone)]

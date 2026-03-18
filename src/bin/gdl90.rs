@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
@@ -12,6 +13,7 @@ use gdl90::message::{
     AddressType, Heartbeat, HeartbeatStatus, Message, OwnshipGeometricAltitude, TargetAlertStatus,
     TargetMisc, TargetReport, TrackType, VerticalFigureOfMerit,
 };
+use gdl90::report::{build_session_report, render_json_report, render_text_report};
 use gdl90::session::{RecordedDatagram, append_datagram, decode_hex, read_datagram_file};
 use gdl90::transport::{
     FOREFLIGHT_DISCOVERY_PORT, FOREFLIGHT_GDL90_PORT, UdpGdl90Receiver, UdpGdl90Sender,
@@ -59,6 +61,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         Err(error) => println!("decode error: {error}"),
                     }
                 }
+            }
+        }
+        Some("report-file") => {
+            let path = PathBuf::from(require_arg(args.next(), "session file")?);
+            let datagrams = read_datagram_file(&path)?;
+            let report = build_session_report(&datagrams);
+            print!("{}", render_text_report(&report));
+        }
+        Some("report-file-json") => {
+            let path = PathBuf::from(require_arg(args.next(), "session file")?);
+            let output = args.next().map(PathBuf::from);
+            let datagrams = read_datagram_file(&path)?;
+            let report = build_session_report(&datagrams);
+            let json = render_json_report(&report, true)?;
+            if let Some(output) = output {
+                fs::write(&output, json)?;
+                println!("wrote {}", output.display());
+            } else {
+                println!("{json}");
             }
         }
         Some("analyze-file") => {
@@ -325,6 +346,8 @@ fn print_usage() {
     println!("  decode-frame <hex-frame>");
     println!("  decode-stream <hex-stream>");
     println!("  decode-file <session-file>");
+    println!("  report-file <session-file>");
+    println!("  report-file-json <session-file> [output-file]");
     println!("  analyze-file <session-file>");
     println!("  validate-file <session-file>");
     println!("  listen [bind-addr]");

@@ -1,0 +1,190 @@
+use serde::Serialize;
+
+use crate::analysis::{SessionAnalysis, SessionValidation, analyze_datagrams, validate_datagrams};
+use crate::frame::FrameDecoder;
+use crate::message::Message;
+use crate::session::{RecordedDatagram, encode_hex};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionReport {
+    pub analysis: SessionAnalysis,
+    pub validation: SessionValidation,
+    pub datagrams: Vec<DatagramReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DatagramReport {
+    pub index: usize,
+    pub delay_ms: Option<u64>,
+    pub size_bytes: usize,
+    pub raw_hex: String,
+    pub frame_count: usize,
+    pub frames: Vec<FrameReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrameReport {
+    pub index: usize,
+    pub clear_hex: Option<String>,
+    pub message_id: Option<u8>,
+    pub kind: Option<String>,
+    pub summary: Option<String>,
+    pub error: Option<String>,
+}
+
+pub fn build_session_report(datagrams: &[RecordedDatagram]) -> SessionReport {
+    let analysis = analyze_datagrams(datagrams);
+    let validation = validate_datagrams(datagrams);
+    let mut reports = Vec::with_capacity(datagrams.len());
+
+    for (datagram_index, datagram) in datagrams.iter().enumerate() {
+        let mut decoder = FrameDecoder::new();
+        let frame_results = decoder.push(&datagram.bytes);
+        let mut frames = Vec::with_capacity(frame_results.len());
+
+        for (frame_index, frame_result) in frame_results.into_iter().enumerate() {
+            match frame_result {
+                Ok(clear) => match Message::decode(&clear) {
+                    Ok(message) => frames.push(FrameReport {
+                        index: frame_index + 1,
+                        clear_hex: Some(encode_hex(&clear)),
+                        message_id: Some(message.message_id()),
+                        kind: Some(message.kind_name()),
+                        summary: Some(message.summary()),
+                        error: None,
+                    }),
+                    Err(error) => frames.push(FrameReport {
+                        index: frame_index + 1,
+                        clear_hex: Some(encode_hex(&clear)),
+                        message_id: clear.first().copied(),
+                        kind: None,
+                        summary: None,
+                        error: Some(error.to_string()),
+                    }),
+                },
+                Err(error) => frames.push(FrameReport {
+                    index: frame_index + 1,
+                    clear_hex: None,
+                    message_id: None,
+                    kind: None,
+                    summary: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        }
+
+        reports.push(DatagramReport {
+            index: datagram_index + 1,
+            delay_ms: datagram.delay_ms,
+            size_bytes: datagram.bytes.len(),
+            raw_hex: encode_hex(&datagram.bytes),
+            frame_count: frames.len(),
+            frames,
+        });
+    }
+
+    SessionReport {
+        analysis,
+        validation,
+        datagrams: reports,
+    }
+}
+
+pub fn render_text_report(report: &SessionReport) -> String {
+    let mut out = String::new();
+
+    push_line(
+        &mut out,
+        format!("datagrams: {}", report.analysis.datagram_count),
+    );
+    push_line(
+        &mut out,
+        format!("total bytes: {}", report.analysis.total_bytes),
+    );
+    push_line(
+        &mut out,
+        format!(
+            "delayed datagrams: {}",
+            report.analysis.delayed_datagram_count
+        ),
+    );
+    push_line(
+        &mut out,
+        format!(
+            "declared replay delay ms: {}",
+            report.analysis.total_declared_delay_ms
+        ),
+    );
+    push_line(
+        &mut out,
+        format!(
+            "decoded messages: {}",
+            report.analysis.decoded_message_count
+        ),
+    );
+    push_line(
+        &mut out,
+        format!("decode errors: {}", report.analysis.decode_error_count),
+    );
+    push_line(
+        &mut out,
+        format!("empty datagrams: {}", report.analysis.empty_datagram_count),
+    );
+    push_line(
+        &mut out,
+        format!(
+            "max messages per datagram: {}",
+            report.analysis.max_messages_per_datagram
+        ),
+    );
+    push_line(&mut out, "message counts:".to_string());
+    for (kind, count) in &report.analysis.message_counts {
+        push_line(&mut out, format!("  {kind}: {count}"));
+    }
+    push_line(&mut out, "datagram details:".to_string());
+    for datagram in &report.datagrams {
+        push_line(
+            &mut out,
+            format!(
+                "  datagram {} delay={:?} size={} frames={}",
+                datagram.index, datagram.delay_ms, datagram.size_bytes, datagram.frame_count
+            ),
+        );
+        for frame in &datagram.frames {
+            if let Some(error) = &frame.error {
+                push_line(
+                    &mut out,
+                    format!("    frame {} error: {error}", frame.index),
+                );
+            } else {
+                push_line(
+                    &mut out,
+                    format!(
+                        "    frame {} kind={} summary={}",
+                        frame.index,
+                        frame.kind.as_deref().unwrap_or("unknown"),
+                        frame.summary.as_deref().unwrap_or("")
+                    ),
+                );
+            }
+        }
+        if datagram.frames.is_empty() {
+            push_line(&mut out, "    no complete framed messages".to_string());
+        }
+    }
+
+    out
+}
+
+pub fn render_json_report(report: &SessionReport, pretty: bool) -> serde_json::Result<String> {
+    if pretty {
+        serde_json::to_string_pretty(report)
+    } else {
+        serde_json::to_string(report)
+    }
+}
+
+fn push_line(out: &mut String, line: String) {
+    out.push_str(&line);
+    out.push('\n');
+}
