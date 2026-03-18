@@ -56,16 +56,18 @@ This crate supports:
 - Uplink payload parsing for the structures documented in sections 4 and 5
   - UAT uplink payload container
   - Information Frames
-  - validated minimal APDU headers
-  - explicit rejection of unsupported APDU descriptor options and segmentation
+  - validated UAT APDU headers
+  - EASA-backed optional APDU time variants and segmentation metadata
+  - explicit rejection of unsupported APDU product-descriptor options
   - typed FIS-B product routing
   - typed known/unknown FIS-B product IDs
   - Generic textual DLAC APDUs
   - whole-record Generic Text APDU packing up to the documented 418-byte payload limit
   - METAR/TAF record composition validation, including `NIL=` handling
   - NEXRAD run-length block payloads
-  - typed NEXRAD block-reference flag/number surface from the public example
+  - typed NEXRAD block-reference element, hemisphere, scale, and block number
   - typed NEXRAD intensity semantics from Table 20
+  - verified DLAC `|` mapping for code `011111`
   - Garmin sample application data field decoding for text and NEXRAD examples
 - Control-panel ASCII messages from section 6
   - Call Sign
@@ -78,7 +80,7 @@ The Garmin ICD explicitly defers some nested payload details to RTCA documents a
 
 - The 8-byte UAT-specific header is preserved as typed raw bytes because the provided Garmin text references DO-282 for its internal bit layout.
 - Basic and Long ADS-B pass-through payloads are structurally segmented into their documented header/state/mode/aux sections, but the bit-level decoding of those inner fields still requires DO-282.
-- NEXRAD block reference internals are preserved as the raw 3-byte indicator because the Garmin text does not reproduce the full Appendix D bit definition.
+- NEXRAD block references are parsed into the EASA-backed element, hemisphere, scale, and block-number fields, but the exact geographic meaning of those values is still external-spec dependent.
 - NEXRAD payload shapes from the Garmin sample data that are not fully specified in the document are preserved raw rather than guessed.
 
 Everything else above is fully encoded and decoded from the provided specs.
@@ -215,7 +217,10 @@ cargo test
 
 - `3.6`: bit-level decoding of State Vector, Mode Status, and Auxiliary State Vector fields still needs the RTCA `DO-282` formulas.
 - `4.1.1`: the 8-byte UAT-specific uplink header bit layout is still deferred by the Garmin ICD to `DO-282`.
-- `4.3`: minimal independent APDUs are implemented and validated, but optional descriptor fields and segmented APDUs still need the external RTCA definitions.
+- `4.3`: minimal independent APDUs plus EASA-backed time/segmentation metadata are implemented, but optional descriptor fields and full linked-product reassembly still need the external RTCA definitions.
 - `4.4` and `4.5`: additional FIS-B products are preserved by product ID, but product-specific decoding still requires the FAA product registry definitions.
 - `5.1`: exact NEXRAD geo block-reference semantics remain external-spec dependent.
 - `5.2`: exact exhaustive DLAC Appendix K coverage is still not guaranteed without the referenced RTCA appendix.
+
+One implementation note:
+- The EASA amendment names "Time Flag #1" and "Time Flag #2" but does not label which bit maps to month/day versus seconds in the public text. This crate treats flag #1 as month/day and flag #2 as seconds to match the amended field order and the published 13/19/22-bit header-time lengths.

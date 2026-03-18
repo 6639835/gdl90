@@ -159,7 +159,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             section: "4.3",
             title: "APDU Header and Payload",
             state: SupportState::Partial,
-            notes: "Minimal 32-bit APDU headers and independent APDUs are validated and supported; optional descriptor fields and segmentation are detected and rejected because the external RTCA definitions are not available.",
+            notes: "Minimal UAT APDUs plus EASA-backed optional time variants and segmentation metadata are parsed and encoded; optional product-descriptor fields and full linked-product reassembly still need the external RTCA definitions.",
         },
         SectionSupportEntry {
             section: "4.4",
@@ -177,13 +177,13 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             section: "5.1",
             title: "NEXRAD Global Block Representation",
             state: SupportState::Partial,
-            notes: "Run-length payloads, typed intensity semantics from Table 20, and sample fields decode; exact geo block-reference semantics remain external-spec dependent.",
+            notes: "Run-length payloads, typed intensity semantics from Table 20, and EASA-backed block-reference element/N-S/scale/block-number parsing are implemented; exact geo semantics remain external-spec dependent.",
         },
         SectionSupportEntry {
             section: "5.2",
             title: "Generic Textual Data Product",
             state: SupportState::Partial,
-            notes: "Generic Text records, DLAC packing, record-to-APDU packing, and METAR/TAF composition are supported; exact full Appendix K DLAC coverage is not guaranteed.",
+            notes: "Generic Text records, DLAC packing, record-to-APDU packing, the verified Appendix-K pipe-character correction, and METAR/TAF composition are supported; exact full Appendix K coverage is not guaranteed.",
         },
         SectionSupportEntry {
             section: "6.1",

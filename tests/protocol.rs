@@ -14,9 +14,9 @@ use gdl90::message::{
 };
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
-    ApduHeader, FisbProduct, FisbProductId, GenericTextApdu, GenericTextField, GenericTextRecord,
-    GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, NexradBlockReference,
-    NexradIntensity, TextQualifier, UatUplinkPayload,
+    ApduHeader, ApduMonthDay, ApduSegmentation, FisbProduct, FisbProductId, GenericTextApdu,
+    GenericTextField, GenericTextRecord, GenericTextRecordKind, InformationFrame, NexradApdu,
+    NexradBlock, NexradBlockReference, NexradIntensity, TextQualifier, UatUplinkPayload,
 };
 
 #[test]
@@ -195,8 +195,11 @@ fn generic_text_uplink_round_trip() {
             product_id: 413,
             segmentation_flag: false,
             time_option: 0,
+            month_day: None,
             hours: 16,
             minutes: 25,
+            seconds: None,
+            segmentation: None,
         },
         records: vec![record.clone()],
     }
@@ -232,8 +235,11 @@ fn nexrad_rle_block_round_trip() {
             product_id: 63,
             segmentation_flag: false,
             time_option: 0,
+            month_day: None,
             hours: 0,
             minutes: 0,
+            seconds: None,
+            segmentation: None,
         },
         block,
     }
@@ -249,7 +255,7 @@ fn nexrad_rle_block_round_trip() {
 }
 
 #[test]
-fn apdu_rejects_unsupported_optional_or_segmented_headers() {
+fn apdu_rejects_unsupported_descriptor_options_and_invalid_time_flags() {
     let error = gdl90::uplink::Apdu::from_bytes(&[0x80, 0x00, 0x00, 0x00]).unwrap_err();
     assert!(
         matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU product descriptor options")
@@ -260,15 +266,17 @@ fn apdu_rejects_unsupported_optional_or_segmented_headers() {
         geo_flag: false,
         product_file_flag: false,
         product_id: 63,
-        segmentation_flag: true,
-        time_option: 0,
+        segmentation_flag: false,
+        time_option: 0b11,
+        month_day: Some(ApduMonthDay { month: 1, day: 2 }),
         hours: 0,
         minutes: 0,
+        seconds: Some(3),
+        segmentation: None,
     };
-    let bytes = header.to_bytes().unwrap();
-    let error = gdl90::uplink::Apdu::from_bytes(&bytes).unwrap_err();
+    let error = header.to_bytes().unwrap_err();
     assert!(
-        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU segmentation")
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU time flags")
     );
 }
 
@@ -281,9 +289,12 @@ fn generic_text_and_nexrad_validate_documented_minimal_headers() {
             product_file_flag: false,
             product_id: 413,
             segmentation_flag: false,
-            time_option: 1,
+            time_option: 0,
+            month_day: None,
             hours: 0,
             minutes: 0,
+            seconds: Some(15),
+            segmentation: None,
         },
         records: vec![GenericTextRecord {
             kind: GenericTextRecordKind::Metar,
@@ -308,8 +319,11 @@ fn generic_text_and_nexrad_validate_documented_minimal_headers() {
             product_id: 63,
             segmentation_flag: false,
             time_option: 0,
+            month_day: None,
             hours: 0,
             minutes: 0,
+            seconds: None,
+            segmentation: None,
         },
         block: NexradBlock::Empty {
             block_reference_indicator: [0x84, 0xA5, 0x70],
@@ -331,8 +345,11 @@ fn generic_text_pack_records_keeps_whole_records_within_apdu_limit() {
         product_id: 413,
         segmentation_flag: false,
         time_option: 0,
+        month_day: None,
         hours: 0,
         minutes: 0,
+        seconds: None,
+        segmentation: None,
     };
     let make_record = |location: &str, text: &str| GenericTextRecord {
         kind: GenericTextRecordKind::Taf,
@@ -383,7 +400,9 @@ fn nexrad_intensity_rows_expose_table_20_semantics() {
 fn nexrad_block_reference_exposes_public_example_bits() {
     let reference = NexradBlockReference::from_raw([0x84, 0xA5, 0x70]);
     assert!(reference.is_run_length_encoded);
-    assert_eq!(reference.raw_block_number, 0x04_A5_70);
+    assert!(!reference.north);
+    assert_eq!(reference.scale, 0);
+    assert_eq!(reference.block_number, 0x04_A5_70);
     assert_eq!(reference.to_raw(), [0x84, 0xA5, 0x70]);
 
     let block = NexradBlock::Empty {
@@ -393,9 +412,87 @@ fn nexrad_block_reference_exposes_public_example_bits() {
         block.block_reference(),
         Some(NexradBlockReference {
             is_run_length_encoded: false,
-            raw_block_number: 0x04_A5_70,
+            north: false,
+            scale: 0,
+            block_number: 0x04_A5_70,
         })
     );
+}
+
+#[test]
+fn apdu_supports_easa_time_variants_and_segmentation_block() {
+    let header_with_seconds = ApduHeader {
+        application_flag: false,
+        geo_flag: false,
+        product_file_flag: false,
+        product_id: 63,
+        segmentation_flag: false,
+        time_option: 0b01,
+        month_day: None,
+        hours: 12,
+        minutes: 34,
+        seconds: Some(56),
+        segmentation: None,
+    };
+    let seconds_bytes = header_with_seconds.to_bytes().unwrap();
+    let (decoded_seconds, seconds_len) = ApduHeader::decode(&seconds_bytes).unwrap();
+    assert_eq!(seconds_len, 5);
+    assert_eq!(decoded_seconds, header_with_seconds);
+
+    let header_with_date_and_segmentation = ApduHeader {
+        application_flag: false,
+        geo_flag: false,
+        product_file_flag: false,
+        product_id: 413,
+        segmentation_flag: true,
+        time_option: 0b10,
+        month_day: Some(ApduMonthDay { month: 3, day: 19 }),
+        hours: 8,
+        minutes: 45,
+        seconds: None,
+        segmentation: Some(ApduSegmentation {
+            product_file_id: 17,
+            product_file_length: 200,
+            apdu_number: 4,
+        }),
+    };
+    let bytes = header_with_date_and_segmentation.to_bytes().unwrap();
+    let (decoded, len) = ApduHeader::decode(&bytes).unwrap();
+    assert_eq!(len, 9);
+    assert_eq!(decoded, header_with_date_and_segmentation);
+}
+
+#[test]
+fn dlac_supports_verified_pipe_character_mapping() {
+    let record = GenericTextRecord {
+        kind: GenericTextRecordKind::Other,
+        record_type: "PIREP".to_string(),
+        location: GenericTextField::Text("KPDX".to_string()),
+        record_time: GenericTextField::Text("260900Z".to_string()),
+        qualifier: None,
+        text: "ONE|TWO".to_string(),
+    };
+    let apdu = GenericTextApdu {
+        header: ApduHeader {
+            application_flag: false,
+            geo_flag: false,
+            product_file_flag: false,
+            product_id: 413,
+            segmentation_flag: false,
+            time_option: 0,
+            month_day: None,
+            hours: 0,
+            minutes: 0,
+            seconds: None,
+            segmentation: None,
+        },
+        records: vec![record.clone()],
+    }
+    .to_apdu()
+    .unwrap();
+
+    let decoded = apdu.as_generic_text().unwrap();
+    assert_eq!(decoded.records, vec![record]);
 }
 
 #[test]
@@ -408,8 +505,11 @@ fn apdu_and_product_surface_known_and_unknown_product_ids() {
             product_id: 999,
             segmentation_flag: false,
             time_option: 0,
+            month_day: None,
             hours: 0,
             minutes: 0,
+            seconds: None,
+            segmentation: None,
         },
         payload: vec![],
     };

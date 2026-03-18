@@ -8,6 +8,12 @@ pub const MAX_APDU_PAYLOAD_LEN: usize = MAX_APDU_LEN - MIN_APDU_HEADER_LEN;
 pub const GENERIC_TEXT_PRODUCT_ID: u16 = 413;
 pub const NEXRAD_PRODUCT_ID: u16 = 63;
 pub const DLAC_RECORD_SEPARATOR: char = '\u{001E}';
+// EASA ETSO-C157a Appendix 1 refers to "Time Flag #1" and "Time Flag #2" without
+// naming which bit corresponds to month/day versus seconds. This implementation
+// maps flag #1 to month/day and flag #2 to seconds to match the amended Table D-1
+// field order and the 13/19/22-bit header-time lengths.
+pub const APDU_TIME_FLAG_SECONDS: u8 = 0b01;
+pub const APDU_TIME_FLAG_MONTH_DAY: u8 = 0b10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FisbProductId {
@@ -239,14 +245,12 @@ impl Apdu {
             });
         }
 
-        let mut header = [0u8; 4];
-        header.copy_from_slice(&bytes[..4]);
-        let header = ApduHeader::from_bytes(header);
+        let (header, header_len) = ApduHeader::decode(bytes)?;
         header.validate_supported_by_current_parser()?;
 
         let apdu = Self {
             header,
-            payload: bytes[4..].to_vec(),
+            payload: bytes[header_len..].to_vec(),
         };
         apdu.validate_payload_len()?;
         Ok(apdu)
@@ -256,8 +260,9 @@ impl Apdu {
         self.header.validate_supported_by_current_parser()?;
         self.validate_payload_len()?;
 
-        let mut out = Vec::with_capacity(4 + self.payload.len());
-        out.extend_from_slice(&self.header.to_bytes()?);
+        let header = self.header.to_bytes()?;
+        let mut out = Vec::with_capacity(header.len() + self.payload.len());
+        out.extend_from_slice(&header);
         out.extend_from_slice(&self.payload);
         Ok(out)
     }
@@ -341,8 +346,24 @@ pub struct ApduHeader {
     pub product_id: u16,
     pub segmentation_flag: bool,
     pub time_option: u8,
+    pub month_day: Option<ApduMonthDay>,
     pub hours: u8,
     pub minutes: u8,
+    pub seconds: Option<u8>,
+    pub segmentation: Option<ApduSegmentation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApduMonthDay {
+    pub month: u8,
+    pub day: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApduSegmentation {
+    pub product_file_id: u16,
+    pub product_file_length: u16,
+    pub apdu_number: u16,
 }
 
 impl ApduHeader {
@@ -359,6 +380,12 @@ impl ApduHeader {
                 details: "must fit in 2 bits".to_string(),
             });
         }
+        if self.time_option == 0x03 {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU time flags",
+                details: "time flag #1 and time flag #2 cannot both be set".to_string(),
+            });
+        }
         if self.hours > 0x1F {
             return Err(Gdl90Error::InvalidField {
                 field: "APDU hours",
@@ -371,7 +398,131 @@ impl ApduHeader {
                 details: "must fit in 6 bits".to_string(),
             });
         }
+        if let Some(month_day) = self.month_day {
+            if month_day.month > 0x0F {
+                return Err(Gdl90Error::InvalidField {
+                    field: "APDU month",
+                    details: "must fit in 4 bits".to_string(),
+                });
+            }
+            if month_day.day > 0x1F {
+                return Err(Gdl90Error::InvalidField {
+                    field: "APDU day",
+                    details: "must fit in 5 bits".to_string(),
+                });
+            }
+        }
+        if let Some(seconds) = self.seconds {
+            if seconds > 0x3F {
+                return Err(Gdl90Error::InvalidField {
+                    field: "APDU seconds",
+                    details: "must fit in 6 bits".to_string(),
+                });
+            }
+        }
+        if let Some(segmentation) = self.segmentation {
+            if segmentation.product_file_id > 0x03FF {
+                return Err(Gdl90Error::InvalidField {
+                    field: "APDU product file id",
+                    details: "must fit in 10 bits".to_string(),
+                });
+            }
+            if segmentation.product_file_length > 0x01FF {
+                return Err(Gdl90Error::InvalidField {
+                    field: "APDU product file length",
+                    details: "must fit in 9 bits".to_string(),
+                });
+            }
+            if segmentation.apdu_number > 0x01FF {
+                return Err(Gdl90Error::InvalidField {
+                    field: "APDU number",
+                    details: "must fit in 9 bits".to_string(),
+                });
+            }
+        }
+
+        let has_month_day = self.month_day.is_some();
+        let has_seconds = self.seconds.is_some();
+        let has_segmentation = self.segmentation.is_some();
+        if self.time_option != encode_apdu_time_option(has_month_day, has_seconds)? {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU time option",
+                details: "time option bits do not match the optional time fields".to_string(),
+            });
+        }
+        if self.segmentation_flag != has_segmentation {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU segmentation",
+                details: "segmentation flag does not match the presence of a segmentation block"
+                    .to_string(),
+            });
+        }
         Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<(Self, usize)> {
+        if bytes.len() < MIN_APDU_HEADER_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "APDU header",
+                expected: "at least 4 bytes",
+                actual: bytes.len(),
+            });
+        }
+
+        let mut reader = BitReader::new(bytes);
+        let application_flag = reader.read_bool()?;
+        let geo_flag = reader.read_bool()?;
+        let product_file_flag = reader.read_bool()?;
+        let product_id = reader.read_u16(11)?;
+        let segmentation_flag = reader.read_bool()?;
+        let time_flag_1 = reader.read_bool()?;
+        let time_flag_2 = reader.read_bool()?;
+        let time_option = ((time_flag_1 as u8) << 1) | time_flag_2 as u8;
+
+        let month_day = if time_flag_1 {
+            Some(ApduMonthDay {
+                month: reader.read_u8(4)?,
+                day: reader.read_u8(5)?,
+            })
+        } else {
+            None
+        };
+
+        let hours = reader.read_u8(5)?;
+        let minutes = reader.read_u8(6)?;
+        let seconds = if time_flag_2 {
+            Some(reader.read_u8(6)?)
+        } else {
+            None
+        };
+
+        let segmentation = if segmentation_flag {
+            Some(ApduSegmentation {
+                product_file_id: reader.read_u16(10)?,
+                product_file_length: reader.read_u16(9)?,
+                apdu_number: reader.read_u16(9)?,
+            })
+        } else {
+            None
+        };
+
+        reader.align_to_byte_zero_pad()?;
+        let header_len = reader.bytes_consumed();
+        let header = Self {
+            application_flag,
+            geo_flag,
+            product_file_flag,
+            product_id,
+            segmentation_flag,
+            time_option,
+            month_day,
+            hours,
+            minutes,
+            seconds,
+            segmentation,
+        };
+        header.validate()?;
+        Ok((header, header_len))
     }
 
     pub fn from_bytes(bytes: [u8; 4]) -> Self {
@@ -383,8 +534,11 @@ impl ApduHeader {
             product_id: ((word >> 18) & 0x07FF) as u16,
             segmentation_flag: ((word >> 17) & 0x01) != 0,
             time_option: ((word >> 15) & 0x03) as u8,
+            month_day: None,
             hours: ((word >> 10) & 0x1F) as u8,
             minutes: ((word >> 4) & 0x3F) as u8,
+            seconds: None,
+            segmentation: None,
         }
     }
 
@@ -401,40 +555,54 @@ impl ApduHeader {
                 details: "optional product descriptor fields are not implemented".to_string(),
             });
         }
-        if self.segmentation_flag {
-            return Err(Gdl90Error::InvalidField {
-                field: "APDU segmentation",
-                details: "segmented APDUs are not implemented".to_string(),
-            });
-        }
 
         Ok(())
     }
 
     pub fn validate_minimal_uat(self) -> Result<()> {
         self.validate_supported_by_current_parser()?;
-        if self.time_option != 0 {
+        if self.time_option != 0 || self.seconds.is_some() || self.month_day.is_some() {
             return Err(Gdl90Error::InvalidField {
                 field: "APDU time option",
                 details: "documented minimal UAT APDU headers use time option 0".to_string(),
             });
         }
+        if self.segmentation_flag || self.segmentation.is_some() {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU segmentation",
+                details: "documented minimal UAT APDU headers do not include segmentation"
+                    .to_string(),
+            });
+        }
         Ok(())
     }
 
-    pub fn to_bytes(self) -> Result<[u8; 4]> {
+    pub fn to_bytes(self) -> Result<Vec<u8>> {
         self.validate()?;
 
-        let mut word = 0u32;
-        word |= (self.application_flag as u32) << 31;
-        word |= (self.geo_flag as u32) << 30;
-        word |= (self.product_file_flag as u32) << 29;
-        word |= (u32::from(self.product_id & 0x07FF)) << 18;
-        word |= (self.segmentation_flag as u32) << 17;
-        word |= (u32::from(self.time_option & 0x03)) << 15;
-        word |= (u32::from(self.hours & 0x1F)) << 10;
-        word |= (u32::from(self.minutes & 0x3F)) << 4;
-        Ok(word.to_be_bytes())
+        let mut writer = BitWriter::new();
+        writer.push_bool(self.application_flag);
+        writer.push_bool(self.geo_flag);
+        writer.push_bool(self.product_file_flag);
+        writer.push_u16(self.product_id, 11);
+        writer.push_bool(self.segmentation_flag);
+        writer.push_bool((self.time_option & APDU_TIME_FLAG_MONTH_DAY) != 0);
+        writer.push_bool((self.time_option & APDU_TIME_FLAG_SECONDS) != 0);
+        if let Some(month_day) = self.month_day {
+            writer.push_u8(month_day.month, 4);
+            writer.push_u8(month_day.day, 5);
+        }
+        writer.push_u8(self.hours, 5);
+        writer.push_u8(self.minutes, 6);
+        if let Some(seconds) = self.seconds {
+            writer.push_u8(seconds, 6);
+        }
+        if let Some(segmentation) = self.segmentation {
+            writer.push_u16(segmentation.product_file_id, 10);
+            writer.push_u16(segmentation.product_file_length, 9);
+            writer.push_u16(segmentation.apdu_number, 9);
+        }
+        writer.finish_zero_padded()
     }
 }
 
@@ -815,7 +983,9 @@ pub enum NexradBlock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NexradBlockReference {
     pub is_run_length_encoded: bool,
-    pub raw_block_number: u32,
+    pub north: bool,
+    pub scale: u8,
+    pub block_number: u32,
 }
 
 impl NexradBlock {
@@ -1085,23 +1255,158 @@ impl NexradIntensity {
 
 impl NexradBlockReference {
     pub fn from_raw(raw: [u8; 3]) -> Self {
-        let combined = ((raw[0] as u32) << 16) | ((raw[1] as u32) << 8) | raw[2] as u32;
         Self {
-            is_run_length_encoded: (combined & 0x80_0000) != 0,
-            raw_block_number: combined & 0x7F_FFFF,
+            is_run_length_encoded: (raw[0] & 0x80) != 0,
+            north: (raw[0] & 0x40) != 0,
+            scale: (raw[0] >> 4) & 0x03,
+            block_number: (((raw[0] & 0x0F) as u32) << 16) | ((raw[1] as u32) << 8) | raw[2] as u32,
         }
     }
 
     pub fn to_raw(self) -> [u8; 3] {
-        let mut combined = self.raw_block_number & 0x7F_FFFF;
+        let mut first = ((self.scale & 0x03) << 4) | (((self.block_number >> 16) as u8) & 0x0F);
         if self.is_run_length_encoded {
-            combined |= 0x80_0000;
+            first |= 0x80;
+        }
+        if self.north {
+            first |= 0x40;
         }
         [
-            ((combined >> 16) & 0xFF) as u8,
-            ((combined >> 8) & 0xFF) as u8,
-            (combined & 0xFF) as u8,
+            first,
+            ((self.block_number >> 8) & 0xFF) as u8,
+            (self.block_number & 0xFF) as u8,
         ]
+    }
+}
+
+fn encode_apdu_time_option(has_month_day: bool, has_seconds: bool) -> Result<u8> {
+    match (has_month_day, has_seconds) {
+        (false, false) => Ok(0),
+        (false, true) => Ok(APDU_TIME_FLAG_SECONDS),
+        (true, false) => Ok(APDU_TIME_FLAG_MONTH_DAY),
+        (true, true) => Err(Gdl90Error::InvalidField {
+            field: "APDU time flags",
+            details: "time flag #1 and time flag #2 cannot both be set".to_string(),
+        }),
+    }
+}
+
+struct BitReader<'a> {
+    bytes: &'a [u8],
+    bit_offset: usize,
+}
+
+impl<'a> BitReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            bit_offset: 0,
+        }
+    }
+
+    fn read_bool(&mut self) -> Result<bool> {
+        Ok(self.read_u8(1)? != 0)
+    }
+
+    fn read_u8(&mut self, bits: usize) -> Result<u8> {
+        let value = self.read_bits(bits)?;
+        u8::try_from(value).map_err(|_| Gdl90Error::InvalidField {
+            field: "bit reader",
+            details: format!("{value} does not fit in u8"),
+        })
+    }
+
+    fn read_u16(&mut self, bits: usize) -> Result<u16> {
+        let value = self.read_bits(bits)?;
+        u16::try_from(value).map_err(|_| Gdl90Error::InvalidField {
+            field: "bit reader",
+            details: format!("{value} does not fit in u16"),
+        })
+    }
+
+    fn read_bits(&mut self, bits: usize) -> Result<u32> {
+        let mut value = 0u32;
+        for _ in 0..bits {
+            let byte_index = self.bit_offset / 8;
+            if byte_index >= self.bytes.len() {
+                return Err(Gdl90Error::InvalidLength {
+                    context: "APDU header",
+                    expected: "enough bytes for optional fields",
+                    actual: self.bytes.len(),
+                });
+            }
+            let bit_index = 7 - (self.bit_offset % 8);
+            let bit = (self.bytes[byte_index] >> bit_index) & 0x01;
+            value = (value << 1) | u32::from(bit);
+            self.bit_offset += 1;
+        }
+        Ok(value)
+    }
+
+    fn align_to_byte_zero_pad(&mut self) -> Result<()> {
+        let remainder = self.bit_offset % 8;
+        if remainder == 0 {
+            return Ok(());
+        }
+        for _ in remainder..8 {
+            if self.read_bool()? {
+                return Err(Gdl90Error::InvalidField {
+                    field: "APDU zero pad",
+                    details: "expected zero padding bits at end of APDU header".to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn bytes_consumed(&self) -> usize {
+        self.bit_offset.div_ceil(8)
+    }
+}
+
+struct BitWriter {
+    bytes: Vec<u8>,
+    bit_offset: usize,
+}
+
+impl BitWriter {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            bit_offset: 0,
+        }
+    }
+
+    fn push_bool(&mut self, value: bool) {
+        self.push_bits(u32::from(value), 1);
+    }
+
+    fn push_u8(&mut self, value: u8, bits: usize) {
+        self.push_bits(u32::from(value), bits);
+    }
+
+    fn push_u16(&mut self, value: u16, bits: usize) {
+        self.push_bits(u32::from(value), bits);
+    }
+
+    fn push_bits(&mut self, value: u32, bits: usize) {
+        for shift in (0..bits).rev() {
+            let bit = ((value >> shift) & 0x01) as u8;
+            let byte_index = self.bit_offset / 8;
+            if byte_index == self.bytes.len() {
+                self.bytes.push(0);
+            }
+            let bit_index = 7 - (self.bit_offset % 8);
+            self.bytes[byte_index] |= bit << bit_index;
+            self.bit_offset += 1;
+        }
+    }
+
+    fn finish_zero_padded(mut self) -> Result<Vec<u8>> {
+        while self.bit_offset % 8 != 0 {
+            self.push_bool(false);
+        }
+        Ok(self.bytes)
     }
 }
 
@@ -1194,7 +1499,7 @@ fn decode_dlac_char(value: u8) -> char {
         28 => '\n',
         29 => DLAC_RECORD_SEPARATOR,
         30 => '\r',
-        31 => '\u{001F}',
+        31 => '|',
         32..=63 => value as char,
         _ => unreachable!(),
     }
@@ -1209,6 +1514,7 @@ fn encode_dlac_char(ch: char) -> Result<u8> {
         '\n' => Ok(28),
         DLAC_RECORD_SEPARATOR => Ok(29),
         '\r' => Ok(30),
+        '|' => Ok(31),
         '\u{001F}' => Ok(31),
         ' '..='?' => Ok(ch as u8),
         _ => Err(Gdl90Error::UnsupportedCharacter {

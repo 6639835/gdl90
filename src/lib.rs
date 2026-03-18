@@ -28,4 +28,6 @@ pub use crate::message::{
     PassThroughReport, TargetAlertStatus, TargetMisc, TargetReport, TrackType,
     UatAdsbPayloadHeader, VerticalFigureOfMerit,
 };
-pub use crate::uplink::{FisbProductId, NexradBlockReference, NexradIntensity};
+pub use crate::uplink::{
+    ApduMonthDay, ApduSegmentation, FisbProductId, NexradBlockReference, NexradIntensity,
+};
