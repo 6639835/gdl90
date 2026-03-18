@@ -12,6 +12,7 @@ mod error;
 pub mod foreflight;
 pub mod frame;
 pub mod message;
+pub mod transport;
 pub mod uplink;
 mod util;
 

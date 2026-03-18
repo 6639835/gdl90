@@ -34,6 +34,10 @@ pub enum Gdl90Error {
         actual: u8,
     },
     ControlFormat(&'static str),
+    Io {
+        context: &'static str,
+        details: String,
+    },
 }
 
 impl fmt::Display for Gdl90Error {
@@ -68,6 +72,7 @@ impl fmt::Display for Gdl90Error {
                 "control checksum mismatch: expected {expected:02X}, got {actual:02X}"
             ),
             Self::ControlFormat(details) => write!(f, "invalid control message format: {details}"),
+            Self::Io { context, details } => write!(f, "{context}: {details}"),
         }
     }
 }

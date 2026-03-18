@@ -25,6 +25,10 @@ This crate supports:
 - ForeFlight extension messages
   - ID message (`0x65/0x00`)
   - AHRS message (`0x65/0x01`)
+- UDP transport helpers
+  - send framed GDL90 datagrams
+  - receive and decode UDP datagrams
+  - discover ForeFlight targets from the port 63093 announcement
 - Uplink payload parsing for the structures documented in sections 4 and 5
   - UAT uplink payload container
   - Information Frames
@@ -54,10 +58,12 @@ src/
   error.rs        Shared error type
   frame.rs        CRC, byte stuffing, frame encoder/decoder, stream decoder
   message.rs      Standard GDL90 message models and binary encode/decode
+  transport.rs    UDP send/receive helpers and ForeFlight discovery support
   uplink.rs       UAT uplink payloads, I-frames, APDUs, DLAC text, NEXRAD blocks
   foreflight.rs   ForeFlight extension messages
   control.rs      Garmin control-panel ASCII messages
   util.rs         Internal shared codecs and helpers
+  bin/gdl90.rs    CLI utility
 examples/
   end_to_end.rs   Framed binary message round trip
   foreflight.rs   ForeFlight device and AHRS examples
@@ -103,6 +109,26 @@ Run the examples with:
 cargo run --example end_to_end
 cargo run --example foreflight
 ```
+
+## CLI
+
+The crate now includes a `gdl90` CLI:
+
+```bash
+cargo run --bin gdl90 -- decode-frame 7E008141DBD00802B38B7E
+cargo run --bin gdl90 -- decode-stream 7E008141DBD00802B38B7E7E0B00C88008787E
+cargo run --bin gdl90 -- discover
+cargo run --bin gdl90 -- listen 0.0.0.0:4000
+cargo run --bin gdl90 -- send-demo 192.168.1.50:4000 10 1000
+```
+
+Commands:
+
+- `decode-frame`: decode one framed GDL90 message from hex
+- `decode-stream`: decode one or more back-to-back framed messages from hex
+- `discover`: wait for a ForeFlight UDP discovery broadcast
+- `listen`: listen for UDP GDL90 traffic and print decoded messages
+- `send-demo`: send a recurring demo heartbeat/ownship/geo-alt/ForeFlight set to a target
 
 ## Validation
 
