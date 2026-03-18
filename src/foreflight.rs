@@ -50,13 +50,6 @@ pub fn validate_message_set(messages: &[Message]) -> Result<()> {
         });
     }
 
-    if !has_connectivity_message(messages) {
-        return Err(Gdl90Error::InvalidField {
-            field: "ForeFlight connectivity",
-            details: "message set should include Heartbeat or Ownship Report".to_string(),
-        });
-    }
-
     for message in messages {
         if !is_supported_message(message) {
             return Err(Gdl90Error::InvalidField {
@@ -467,18 +460,15 @@ mod tests {
     }
 
     #[test]
-    fn foreflight_message_set_requires_connectivity_message() {
-        let error = validate_message_set(&[Message::ForeFlightAhrs(ForeFlightAhrsMessage {
+    fn foreflight_message_set_allows_supported_non_connectivity_messages() {
+        validate_message_set(&[Message::ForeFlightAhrs(ForeFlightAhrsMessage {
             roll_tenths_degrees: None,
             pitch_tenths_degrees: None,
             heading: None,
             indicated_airspeed_knots: None,
             true_airspeed_knots: None,
         })])
-        .unwrap_err();
-        assert!(
-            matches!(error, Gdl90Error::InvalidField { field, .. } if field == "ForeFlight connectivity")
-        );
+        .unwrap();
     }
 
     #[test]

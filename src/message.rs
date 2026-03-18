@@ -474,7 +474,10 @@ impl TargetReport {
         out.push(((altitude_raw as u8 & 0x0F) << 4) | misc);
         out.push((self.nic << 4) | self.nacp);
 
-        let horizontal = self.horizontal_velocity_knots.unwrap_or(0x0FFF);
+        let horizontal = match self.horizontal_velocity_knots {
+            Some(knots) => knots.min(0x0FFE),
+            None => 0x0FFF,
+        };
         if horizontal > 0x0FFF {
             return Err(Gdl90Error::InvalidField {
                 field: "horizontal velocity",
@@ -1060,13 +1063,13 @@ fn encode_vertical_velocity(value: Option<i16>) -> Result<u16> {
             });
         }
         let units = value / 64;
-        if !(-510..=510).contains(&units) {
-            return Err(Gdl90Error::InvalidField {
-                field: "vertical velocity",
-                details: "must fit in GDL90 12-bit signed rate encoding".to_string(),
-            });
+        if units >= 510 {
+            0x01FE
+        } else if units <= -510 {
+            0x0E02
+        } else {
+            (units as i16 as u16) & 0x0FFF
         }
-        (units as i16 as u16) & 0x0FFF
     } else {
         0x0800
     };

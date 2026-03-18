@@ -201,7 +201,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             section: "ForeFlight Extension",
             title: "ForeFlight GDL90 Extension",
             state: SupportState::Complete,
-            notes: "The documented message subset, connectivity-message requirement, MTU guard, discovery flow, ID, and AHRS support are implemented.",
+            notes: "The documented message subset, connectivity helper, MTU guard, discovery flow, ID, and AHRS support are implemented.",
         },
     ]
 }

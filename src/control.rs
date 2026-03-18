@@ -99,7 +99,6 @@ pub struct ModeMessage {
     pub ident: IdentStatus,
     pub squawk: String,
     pub emergency: EmergencyCode,
-    pub healthy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,16 +174,15 @@ fn decode_mode(line: &[u8]) -> Result<ModeMessage> {
         return Err(Gdl90Error::ControlFormat("squawk must be 4 digits"));
     }
     let emergency = EmergencyCode::from_byte(line[12])?;
-    let healthy = match line[13] {
-        b'1' => true,
+    match line[13] {
+        b'1' => {}
         _ => return Err(Gdl90Error::ControlFormat("health bit must be '1'")),
-    };
+    }
     Ok(ModeMessage {
         mode,
         ident,
         squawk,
         emergency,
-        healthy,
     })
 }
 
@@ -197,7 +195,7 @@ fn encode_mode(message: &ModeMessage) -> Result<Vec<u8>> {
     out.push(b',');
     out.extend_from_slice(&encode_ascii_digits(&message.squawk, 4, "squawk")?);
     out.push(message.emergency.byte());
-    out.push(if message.healthy { b'1' } else { b'0' });
+    out.push(b'1');
     let checksum = hex_checksum(&out);
     out.extend_from_slice(&checksum);
     out.push(b'\r');

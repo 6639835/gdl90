@@ -157,7 +157,6 @@ fn control_messages_round_trip() {
         ident: IdentStatus::Active,
         squawk: "2354".to_string(),
         emergency: EmergencyCode::None,
-        healthy: true,
     });
     let encoded_mode = mode.encode().unwrap();
     assert_eq!(&encoded_mode, b"^MD A,I,23540120\r");
@@ -494,6 +493,53 @@ fn ownship_report_round_trip() {
         report.emergency_priority_code
     );
     assert_eq!(decoded.spare, report.spare);
+}
+
+#[test]
+fn traffic_velocity_encoding_saturates_to_documented_limits() {
+    let report = TargetReport {
+        alert_status: TargetAlertStatus::NoAlert,
+        address_type: AddressType::AdsbIcao,
+        participant_address: 0x12_34_56,
+        latitude_degrees: 0.0,
+        longitude_degrees: 0.0,
+        pressure_altitude_feet: Some(0),
+        misc: TargetMisc {
+            airborne: true,
+            extrapolated: false,
+            track_type: TrackType::TrueTrack,
+        },
+        nic: 9,
+        nacp: 9,
+        horizontal_velocity_knots: Some(4_095),
+        vertical_velocity_fpm: Some(32_640),
+        track_heading: Some(0),
+        emitter_category: 1,
+        call_sign: "N1".to_string(),
+        emergency_priority_code: 0,
+        spare: 0,
+    };
+
+    let encoded = Message::TrafficReport(report.clone()).encode().unwrap();
+    let decoded = match Message::decode(&encoded).unwrap() {
+        Message::TrafficReport(report) => report,
+        other => panic!("expected traffic report, got {other:?}"),
+    };
+
+    assert_eq!(decoded.horizontal_velocity_knots, Some(4_094));
+    assert_eq!(decoded.vertical_velocity_fpm, Some(32_640));
+
+    let descending = TargetReport {
+        horizontal_velocity_knots: Some(4_094),
+        vertical_velocity_fpm: Some(-32_640),
+        ..report
+    };
+    let encoded = Message::TrafficReport(descending).encode().unwrap();
+    let decoded = match Message::decode(&encoded).unwrap() {
+        Message::TrafficReport(report) => report,
+        other => panic!("expected traffic report, got {other:?}"),
+    };
+    assert_eq!(decoded.vertical_velocity_fpm, Some(-32_640));
 }
 
 #[test]

@@ -32,7 +32,7 @@ This crate supports:
   - ID message (`0x65/0x00`)
   - AHRS message (`0x65/0x01`)
   - supported-message subset validation for ForeFlight UDP datagrams
-  - connectivity-message enforcement (`Heartbeat` or `Ownship Report`)
+  - connectivity-message helper for `Heartbeat` / `Ownship Report` presence checks
   - packet-size guard for the documented sub-1500-byte MTU recommendation
   - discovery interval and AHRS cadence constants from the extension doc
 - UDP transport helpers

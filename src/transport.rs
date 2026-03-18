@@ -378,7 +378,7 @@ mod tests {
         )])
         .unwrap_err();
         assert!(
-            matches!(error, Gdl90Error::InvalidField { field, .. } if field == "ForeFlight connectivity")
+            matches!(error, Gdl90Error::InvalidField { field, .. } if field == "ForeFlight supported message set")
         );
     }
 
