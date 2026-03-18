@@ -8,6 +8,7 @@
 //! - Control-panel ASCII message encode/decode support.
 
 pub mod analysis;
+pub mod bandwidth;
 pub mod control;
 mod error;
 pub mod foreflight;

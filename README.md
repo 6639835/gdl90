@@ -12,6 +12,7 @@ The implementation was built from the two documents provided in `/Users/lujunche
 This crate supports:
 
 - Async HDLC framing with GDL90 CRC-CCITT FCS and byte stuffing
+- Bandwidth-management scheduling for the section 2.3 output order and byte budget model
 - Standard GDL90 messages from section 3 of the Garmin ICD
   - Heartbeat
   - Initialization
@@ -69,6 +70,7 @@ src/
   lib.rs          Public exports
   error.rs        Shared error type
   frame.rs        CRC, byte stuffing, frame encoder/decoder, stream decoder
+  bandwidth.rs    Section 2.3 bandwidth-budget scheduling and prioritization
   message.rs      Standard GDL90 message models and binary encode/decode
   report.rs       Detailed text and JSON reporting for recorded sessions
   session.rs      Recorded datagram files, hex parsing, and replay helpers
