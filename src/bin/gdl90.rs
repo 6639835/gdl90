@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
+use gdl90::analysis::{analyze_datagrams, validate_datagrams};
 use gdl90::foreflight::{
     ForeFlightAhrsMessage, ForeFlightCapabilities, ForeFlightIdMessage, GeometricAltitudeDatum,
     Heading, HeadingType, InternetPolicy,
@@ -58,6 +59,49 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         Err(error) => println!("decode error: {error}"),
                     }
                 }
+            }
+        }
+        Some("analyze-file") => {
+            let path = PathBuf::from(require_arg(args.next(), "session file")?);
+            let datagrams = read_datagram_file(&path)?;
+            let analysis = analyze_datagrams(&datagrams);
+            println!("datagrams: {}", analysis.datagram_count);
+            println!("total bytes: {}", analysis.total_bytes);
+            println!("delayed datagrams: {}", analysis.delayed_datagram_count);
+            println!(
+                "declared replay delay ms: {}",
+                analysis.total_declared_delay_ms
+            );
+            println!("decoded messages: {}", analysis.decoded_message_count);
+            println!("decode errors: {}", analysis.decode_error_count);
+            println!("empty datagrams: {}", analysis.empty_datagram_count);
+            println!(
+                "max messages per datagram: {}",
+                analysis.max_messages_per_datagram
+            );
+            println!("message counts:");
+            for (kind, count) in analysis.message_counts {
+                println!("  {kind}: {count}");
+            }
+        }
+        Some("validate-file") => {
+            let path = PathBuf::from(require_arg(args.next(), "session file")?);
+            let datagrams = read_datagram_file(&path)?;
+            let validation = validate_datagrams(&datagrams);
+            if validation.is_valid() {
+                println!(
+                    "valid: {} datagrams, no decode issues",
+                    validation.datagram_count
+                );
+            } else {
+                println!(
+                    "invalid: {} of {} datagrams have issues",
+                    validation.invalid_datagram_count, validation.datagram_count
+                );
+                for issue in validation.issues {
+                    println!("  datagram {}: {}", issue.datagram_index, issue.details);
+                }
+                return Err("session validation failed".into());
             }
         }
         Some("listen") => {
@@ -281,6 +325,8 @@ fn print_usage() {
     println!("  decode-frame <hex-frame>");
     println!("  decode-stream <hex-stream>");
     println!("  decode-file <session-file>");
+    println!("  analyze-file <session-file>");
+    println!("  validate-file <session-file>");
     println!("  listen [bind-addr]");
     println!("  discover [bind-addr] [timeout-seconds]");
     println!("  capture [bind-addr] <output-file> [count]");

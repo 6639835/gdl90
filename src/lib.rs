@@ -7,6 +7,7 @@
 //! - Uplink payload parsing for documented I-Frames and APDUs.
 //! - Control-panel ASCII message encode/decode support.
 
+pub mod analysis;
 pub mod control;
 mod error;
 pub mod foreflight;
