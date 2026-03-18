@@ -59,10 +59,12 @@ This crate supports:
   - validated minimal APDU headers
   - explicit rejection of unsupported APDU descriptor options and segmentation
   - typed FIS-B product routing
+  - typed known/unknown FIS-B product IDs
   - Generic textual DLAC APDUs
   - whole-record Generic Text APDU packing up to the documented 418-byte payload limit
   - METAR/TAF record composition validation, including `NIL=` handling
   - NEXRAD run-length block payloads
+  - typed NEXRAD block-reference flag/number surface from the public example
   - typed NEXRAD intensity semantics from Table 20
   - Garmin sample application data field decoding for text and NEXRAD examples
 - Control-panel ASCII messages from section 6
@@ -214,6 +216,6 @@ cargo test
 - `3.6`: bit-level decoding of State Vector, Mode Status, and Auxiliary State Vector fields still needs the RTCA `DO-282` formulas.
 - `4.1.1`: the 8-byte UAT-specific uplink header bit layout is still deferred by the Garmin ICD to `DO-282`.
 - `4.3`: minimal independent APDUs are implemented and validated, but optional descriptor fields and segmented APDUs still need the external RTCA definitions.
-- `4.4` and `4.5`: additional FIS-B products still require the FAA product registry definitions.
+- `4.4` and `4.5`: additional FIS-B products are preserved by product ID, but product-specific decoding still requires the FAA product registry definitions.
 - `5.1`: exact NEXRAD geo block-reference semantics remain external-spec dependent.
 - `5.2`: exact exhaustive DLAC Appendix K coverage is still not guaranteed without the referenced RTCA appendix.

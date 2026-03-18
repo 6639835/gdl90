@@ -9,6 +9,39 @@ pub const GENERIC_TEXT_PRODUCT_ID: u16 = 413;
 pub const NEXRAD_PRODUCT_ID: u16 = 63;
 pub const DLAC_RECORD_SEPARATOR: char = '\u{001E}';
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FisbProductId {
+    GenericText,
+    Nexrad,
+    Unknown(u16),
+}
+
+impl FisbProductId {
+    pub fn from_raw(value: u16) -> Self {
+        match value {
+            GENERIC_TEXT_PRODUCT_ID => Self::GenericText,
+            NEXRAD_PRODUCT_ID => Self::Nexrad,
+            other => Self::Unknown(other),
+        }
+    }
+
+    pub fn raw(self) -> u16 {
+        match self {
+            Self::GenericText => GENERIC_TEXT_PRODUCT_ID,
+            Self::Nexrad => NEXRAD_PRODUCT_ID,
+            Self::Unknown(value) => value,
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::GenericText => "Generic Text",
+            Self::Nexrad => "NEXRAD",
+            Self::Unknown(_) => "Unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UatUplinkPayload {
     pub header: [u8; UAT_HEADER_LEN],
@@ -267,11 +300,19 @@ impl Apdu {
     }
 
     pub fn decode_product(&self) -> Result<FisbProduct> {
-        match self.header.product_id {
-            GENERIC_TEXT_PRODUCT_ID => Ok(FisbProduct::GenericText(self.as_generic_text()?)),
-            NEXRAD_PRODUCT_ID => Ok(FisbProduct::Nexrad(self.as_nexrad()?)),
-            _ => Ok(FisbProduct::Unknown(self.clone())),
+        match self.product_id() {
+            FisbProductId::GenericText => Ok(FisbProduct::GenericText(self.as_generic_text()?)),
+            FisbProductId::Nexrad => Ok(FisbProduct::Nexrad(self.as_nexrad()?)),
+            FisbProductId::Unknown(_) => Ok(FisbProduct::Unknown(self.clone())),
         }
+    }
+
+    pub fn product_id(&self) -> FisbProductId {
+        FisbProductId::from_raw(self.header.product_id)
+    }
+
+    pub fn product_name(&self) -> &'static str {
+        self.product_id().display_name()
     }
 }
 
@@ -280,6 +321,16 @@ pub enum FisbProduct {
     GenericText(GenericTextApdu),
     Nexrad(NexradApdu),
     Unknown(Apdu),
+}
+
+impl FisbProduct {
+    pub fn product_id(&self) -> FisbProductId {
+        match self {
+            Self::GenericText(_) => FisbProductId::GenericText,
+            Self::Nexrad(_) => FisbProductId::Nexrad,
+            Self::Unknown(apdu) => apdu.product_id(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -643,6 +694,15 @@ impl GenericTextRecord {
     }
 
     pub fn validate_metar_taf_composition(&self) -> Result<()> {
+        let encoded_len = self.encoded_len()?;
+        if encoded_len > MAX_APDU_PAYLOAD_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "generic text record",
+                expected: "at most 418 bytes",
+                actual: encoded_len,
+            });
+        }
+
         match self.kind {
             GenericTextRecordKind::Metar | GenericTextRecordKind::Taf => {
                 if self.text.contains(DLAC_RECORD_SEPARATOR) {
@@ -750,6 +810,12 @@ pub enum NexradBlock {
     Unparsed {
         raw: Vec<u8>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NexradBlockReference {
+    pub is_run_length_encoded: bool,
+    pub raw_block_number: u32,
 }
 
 impl NexradBlock {
@@ -916,6 +982,26 @@ impl NexradBlock {
             runs,
         })
     }
+
+    pub fn block_reference_indicator(&self) -> Option<[u8; 3]> {
+        match self {
+            Self::Empty {
+                block_reference_indicator,
+            }
+            | Self::RunLengthEncoded {
+                block_reference_indicator,
+                ..
+            } => Some(*block_reference_indicator),
+            Self::Unparsed { raw } => raw
+                .get(..3)
+                .and_then(|slice| <[u8; 3]>::try_from(slice).ok()),
+        }
+    }
+
+    pub fn block_reference(&self) -> Option<NexradBlockReference> {
+        let raw = self.block_reference_indicator()?;
+        Some(NexradBlockReference::from_raw(raw))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -994,6 +1080,28 @@ impl NexradIntensity {
 
     pub fn is_background(self) -> bool {
         matches!(self, Self::Value0 | Self::Value1)
+    }
+}
+
+impl NexradBlockReference {
+    pub fn from_raw(raw: [u8; 3]) -> Self {
+        let combined = ((raw[0] as u32) << 16) | ((raw[1] as u32) << 8) | raw[2] as u32;
+        Self {
+            is_run_length_encoded: (combined & 0x80_0000) != 0,
+            raw_block_number: combined & 0x7F_FFFF,
+        }
+    }
+
+    pub fn to_raw(self) -> [u8; 3] {
+        let mut combined = self.raw_block_number & 0x7F_FFFF;
+        if self.is_run_length_encoded {
+            combined |= 0x80_0000;
+        }
+        [
+            ((combined >> 16) & 0xFF) as u8,
+            ((combined >> 8) & 0xFF) as u8,
+            (combined & 0xFF) as u8,
+        ]
     }
 }
 

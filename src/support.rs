@@ -165,13 +165,13 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             section: "4.4",
             title: "FIS-B Products",
             state: SupportState::Partial,
-            notes: "Generic Text and NEXRAD products are typed; other registry products are not implemented.",
+            notes: "Generic Text and NEXRAD products are typed; other product IDs are preserved and surfaced as unknown registry products, but not decoded.",
         },
         SectionSupportEntry {
             section: "4.5",
             title: "Future Products",
             state: SupportState::NotImplemented,
-            notes: "Future FAA registry products are unknown until product definitions are provided.",
+            notes: "Future FAA registry products are preserved by product ID, but no product-specific decoding is possible until definitions are provided.",
         },
         SectionSupportEntry {
             section: "5.1",

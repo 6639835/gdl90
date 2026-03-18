@@ -14,9 +14,9 @@ use gdl90::message::{
 };
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
-    ApduHeader, FisbProduct, GenericTextApdu, GenericTextField, GenericTextRecord,
-    GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, NexradIntensity,
-    TextQualifier, UatUplinkPayload,
+    ApduHeader, FisbProduct, FisbProductId, GenericTextApdu, GenericTextField, GenericTextRecord,
+    GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, NexradBlockReference,
+    NexradIntensity, TextQualifier, UatUplinkPayload,
 };
 
 #[test]
@@ -378,6 +378,65 @@ fn nexrad_intensity_rows_expose_table_20_semantics() {
     assert_eq!(rows[0][3].weather_condition(), "VIP 6");
     assert_eq!(rows[0][0].reflectivity_range(), "dBz < 5");
     assert!(rows[0][1].is_background());
+}
+
+#[test]
+fn nexrad_block_reference_exposes_public_example_bits() {
+    let reference = NexradBlockReference::from_raw([0x84, 0xA5, 0x70]);
+    assert!(reference.is_run_length_encoded);
+    assert_eq!(reference.raw_block_number, 0x04_A5_70);
+    assert_eq!(reference.to_raw(), [0x84, 0xA5, 0x70]);
+
+    let block = NexradBlock::Empty {
+        block_reference_indicator: [0x04, 0xA5, 0x70],
+    };
+    assert_eq!(
+        block.block_reference(),
+        Some(NexradBlockReference {
+            is_run_length_encoded: false,
+            raw_block_number: 0x04_A5_70,
+        })
+    );
+}
+
+#[test]
+fn apdu_and_product_surface_known_and_unknown_product_ids() {
+    let unknown = gdl90::uplink::Apdu {
+        header: ApduHeader {
+            application_flag: false,
+            geo_flag: false,
+            product_file_flag: false,
+            product_id: 999,
+            segmentation_flag: false,
+            time_option: 0,
+            hours: 0,
+            minutes: 0,
+        },
+        payload: vec![],
+    };
+    assert_eq!(unknown.product_id(), FisbProductId::Unknown(999));
+    assert_eq!(unknown.product_name(), "Unknown");
+    assert_eq!(
+        unknown.decode_product().unwrap().product_id(),
+        FisbProductId::Unknown(999)
+    );
+}
+
+#[test]
+fn generic_text_record_rejects_oversized_single_record() {
+    let record = GenericTextRecord {
+        kind: GenericTextRecordKind::Taf,
+        record_type: "TAF".to_string(),
+        location: GenericTextField::Text("KSFO".to_string()),
+        record_time: GenericTextField::Text("260900Z".to_string()),
+        qualifier: None,
+        text: "A".repeat(700),
+    };
+
+    let error = record.validate_metar_taf_composition().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidLength { context, .. } if context == "generic text record")
+    );
 }
 
 #[test]
