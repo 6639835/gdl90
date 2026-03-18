@@ -50,6 +50,7 @@ This crate supports:
   - Generic textual DLAC APDUs
   - METAR/TAF record composition validation, including `NIL=` handling
   - NEXRAD run-length block payloads
+  - Garmin sample application data field decoding for text and NEXRAD examples
 - Control-panel ASCII messages from section 6
   - Call Sign
   - Mode
@@ -62,6 +63,7 @@ The Garmin ICD explicitly defers some nested payload details to RTCA documents a
 - The 8-byte UAT-specific header is preserved as typed raw bytes because the provided Garmin text references DO-282 for its internal bit layout.
 - Basic and Long ADS-B pass-through payloads are preserved as fixed raw payloads because their internal format is also defined by DO-282 rather than by the supplied Garmin text.
 - NEXRAD block reference internals are preserved as the raw 3-byte indicator because the Garmin text does not reproduce the full Appendix D bit definition.
+- NEXRAD payload shapes from the Garmin sample data that are not fully specified in the document are preserved raw rather than guessed.
 
 Everything else above is fully encoded and decoded from the provided specs.
 

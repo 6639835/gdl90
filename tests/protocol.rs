@@ -12,6 +12,7 @@ use gdl90::message::{
     OwnshipGeometricAltitude, TargetAlertStatus, TargetMisc, TargetReport, TrackType,
     VerticalFigureOfMerit,
 };
+use gdl90::session::decode_hex;
 use gdl90::uplink::{
     ApduHeader, FisbProduct, GenericTextApdu, GenericTextField, GenericTextRecord,
     GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, TextQualifier,
@@ -320,4 +321,108 @@ fn generic_text_nil_fields_and_qualifier_rules_are_supported() {
 
     let invalid = GenericTextRecord::parse("METAR KSLE 260900Z AM TEST REPORT").unwrap();
     assert!(invalid.validate_metar_taf_composition().is_err());
+}
+
+#[test]
+fn sample_text_application_data_field_decodes_to_five_tafs() {
+    let hex = concat!(
+        "2180067441905011a02d3305832db0e70c1a04d832d71cf1d60c38c30d8b5204364cd806157c36c",
+        "2008b3b1cb079c146370d30c205920b0ccb5204364cd8130d4cb5c3d79d2180067441905011a02d",
+        "0118832db0e70c1a04d832d71cf1d60c38c30d8b5204364cd806157c36c2008b3b1cb079c146370",
+        "d30c205920b0ccb5204364cd8130d4cb5c3d79d2180067441905011a02c5547832db0e70c1a04d8",
+        "32d71cf1d60c38c30d8b5204364cd806157c36c2008b3b1cb079c146370d30c205920b0ccb52043",
+        "64cd8130d4cb5c3d79d2180067441905011a02c14d4832db0e70c1a04d832d71cf1d60c38c30d8b",
+        "5204364cd806157c36c2008b3b1cb079c146370d30c205920b0ccb5204364cd8130d4cb5c3d79d2",
+        "180067441905011a02c824f832db0e70c1a04d832d71cf1d60c38c30d8b5204364cd806157c36c2",
+        "008b3b1cb079c146370d30c205920b0ccb5204364cd8130d4cb5c3d79d00000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000"
+    );
+    let bytes = decode_hex(hex).unwrap();
+    assert_eq!(bytes.len(), 424);
+    let payload = UatUplinkPayload {
+        header: [0u8; 8],
+        application_data: bytes.try_into().unwrap(),
+    };
+
+    let products = payload.fisb_products().unwrap();
+    assert_eq!(products.len(), 5);
+    for product in products {
+        match product {
+            FisbProduct::GenericText(text) => {
+                text.validate_records().unwrap();
+                assert_eq!(text.records.len(), 1);
+                assert_eq!(text.records[0].kind, GenericTextRecordKind::Taf);
+            }
+            other => panic!("expected generic text product, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn sample_nexrad_application_data_fields_decode_to_nineteen_products() {
+    let field1 = concat!(
+        "130000FC000084A570308950111A53120930110A23451B0A0918090A1B0C1D0607061D041",
+        "B0A0108208000FC000084A3AE00090A1314150617061D04130A01080112131C0D06270615",
+        "140B0A01000112131C0D06270615140B0A010000090A1314150617061D04130A0108148000",
+        "FC000084A1EC00090A1B0C1D0607061D041B0A010808110A23451B0A091018111A531209",
+        "20308930130000FC000084AAB7308950111A53120930110A23451B0A0918090A1B0C1D060",
+        "7061D041B0A0108208000FC000084A8F500090A1314150617061D04130A01080112131C0D",
+        "06270615140B0A01000112131C0D06270615140B0A010000090A1314150617061D04130A01",
+        "08148000FC000084A73300090A1B0C1D0607061D041B0A010808110A23451B0A091018111",
+        "A53120920308930130000FC000084AFFD308950111A53120930110A23451B0A0918090A1B",
+        "0C1D0607061D041B0A010800000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "0000000000000000000000000000000000000"
+    );
+    let field2 = concat!(
+        "208000FC000084AE3B00090A1314150617061D04130A01080112131C0D06270615140B0A0",
+        "1000112131C0D06270615140B0A010000090A1314150617061D04130A0108148000FC00008",
+        "4AC7900090A1B0C1D0607061D041B0A010808110A23451B0A091018111A5312092030893",
+        "0040000FC000004B1BDF0040000FC000004AFFBD0040000FC000004AE39D0040000FC000",
+        "004AC77D0040000FC000004AAB5D0040000FC000004A8F3D0040000FC000004A731D004",
+        "0000FC000004A56FE0040000FC000004A3ADE0040000FC000004A1EBE0000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000"
+    );
+
+    let payloads = [field1, field2]
+        .into_iter()
+        .map(|hex| UatUplinkPayload {
+            header: [0u8; 8],
+            application_data: decode_hex(hex).unwrap().try_into().unwrap(),
+        })
+        .collect::<Vec<_>>();
+
+    let mut products = Vec::new();
+    for payload in payloads {
+        products.extend(payload.fisb_products().unwrap());
+    }
+
+    assert_eq!(products.len(), 19);
+    let mut nexrad_count = 0usize;
+    let mut empty_or_unparsed_count = 0usize;
+    let mut rle_count = 0usize;
+    for product in products {
+        match product {
+            FisbProduct::Nexrad(nexrad) => {
+                nexrad_count += 1;
+                match nexrad.block {
+                    NexradBlock::Empty { .. } | NexradBlock::Unparsed { .. } => {
+                        empty_or_unparsed_count += 1
+                    }
+                    NexradBlock::RunLengthEncoded { .. } => rle_count += 1,
+                }
+            }
+            other => panic!("expected nexrad product, got {other:?}"),
+        }
+    }
+
+    assert_eq!(nexrad_count, 19);
+    assert_eq!(empty_or_unparsed_count, 10);
+    assert_eq!(rle_count, 9);
 }

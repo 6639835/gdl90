@@ -115,6 +115,17 @@ impl UatUplinkPayload {
             application_data,
         })
     }
+
+    pub fn fisb_products(&self) -> Result<Vec<FisbProduct>> {
+        let mut products = Vec::new();
+        for frame in self.information_frames()? {
+            if frame.frame_type != FrameType::FisBApdu {
+                continue;
+            }
+            products.push(frame.apdu()?.decode_product()?);
+        }
+        Ok(products)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,6 +327,13 @@ impl GenericTextApdu {
             header: self.header,
             payload: encode_dlac(&text)?,
         })
+    }
+
+    pub fn validate_records(&self) -> Result<()> {
+        for record in &self.records {
+            record.validate_metar_taf_composition()?;
+        }
+        Ok(())
     }
 }
 
@@ -522,6 +540,9 @@ pub enum NexradBlock {
         block_reference_indicator: [u8; 3],
         runs: Vec<NexradRun>,
     },
+    Unparsed {
+        raw: Vec<u8>,
+    },
 }
 
 impl NexradBlock {
@@ -552,9 +573,8 @@ impl NexradBlock {
 
         let total: usize = runs.iter().map(|run| run.count as usize).sum();
         if total != 128 {
-            return Err(Gdl90Error::InvalidField {
-                field: "NEXRAD run-length payload",
-                details: format!("decoded run count is {total}, expected 128 bins"),
+            return Ok(Self::Unparsed {
+                raw: payload.to_vec(),
             });
         }
 
@@ -580,6 +600,7 @@ impl NexradBlock {
                 }
                 out
             }
+            Self::Unparsed { raw } => raw.clone(),
         }
     }
 
@@ -593,7 +614,15 @@ impl NexradBlock {
                 }
                 bins
             }
+            Self::Unparsed { .. } => Vec::new(),
         }
+    }
+
+    pub fn decode_rows(&self) -> Vec<Vec<u8>> {
+        self.decode_bins()
+            .chunks(32)
+            .map(|row| row.to_vec())
+            .collect()
     }
 
     pub fn from_bins(block_reference_indicator: [u8; 3], bins: &[u8; 128]) -> Result<Self> {
