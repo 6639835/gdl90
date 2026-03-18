@@ -204,7 +204,7 @@ fn generic_text_uplink_round_trip() {
     .to_apdu()
     .unwrap();
 
-    let frame = InformationFrame::from_apdu(&apdu);
+    let frame = InformationFrame::from_apdu(&apdu).unwrap();
     let payload = UatUplinkPayload::from_information_frames([0u8; 8], &[frame]).unwrap();
     let frames = payload.information_frames().unwrap();
     let parsed_apdu = frames[0].apdu().unwrap();
@@ -238,7 +238,8 @@ fn nexrad_rle_block_round_trip() {
         },
         block,
     }
-    .to_apdu();
+    .to_apdu()
+    .unwrap();
 
     let parsed = apdu.as_nexrad().unwrap();
     assert_eq!(parsed.block.decode_bins(), bins);
@@ -246,6 +247,80 @@ fn nexrad_rle_block_round_trip() {
         FisbProduct::Nexrad(_) => {}
         other => panic!("expected nexrad product, got {other:?}"),
     }
+}
+
+#[test]
+fn apdu_rejects_unsupported_optional_or_segmented_headers() {
+    let error = gdl90::uplink::Apdu::from_bytes(&[0x80, 0x00, 0x00, 0x00]).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU product descriptor options")
+    );
+
+    let header = ApduHeader {
+        application_flag: false,
+        geo_flag: false,
+        product_file_flag: false,
+        product_id: 63,
+        segmentation_flag: true,
+        time_option: 0,
+        hours: 0,
+        minutes: 0,
+    };
+    let bytes = header.to_bytes().unwrap();
+    let error = gdl90::uplink::Apdu::from_bytes(&bytes).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU segmentation")
+    );
+}
+
+#[test]
+fn generic_text_and_nexrad_validate_documented_minimal_headers() {
+    let generic_error = GenericTextApdu {
+        header: ApduHeader {
+            application_flag: false,
+            geo_flag: false,
+            product_file_flag: false,
+            product_id: 413,
+            segmentation_flag: false,
+            time_option: 1,
+            hours: 0,
+            minutes: 0,
+        },
+        records: vec![GenericTextRecord {
+            kind: GenericTextRecordKind::Metar,
+            record_type: "METAR".to_string(),
+            location: GenericTextField::Text("KSFO".to_string()),
+            record_time: GenericTextField::Text("260900Z".to_string()),
+            qualifier: None,
+            text: "AUTO 28012KT 10SM CLR=".to_string(),
+        }],
+    }
+    .to_apdu()
+    .unwrap_err();
+    assert!(
+        matches!(generic_error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU time option")
+    );
+
+    let nexrad_error = NexradApdu {
+        header: ApduHeader {
+            application_flag: true,
+            geo_flag: false,
+            product_file_flag: false,
+            product_id: 63,
+            segmentation_flag: false,
+            time_option: 0,
+            hours: 0,
+            minutes: 0,
+        },
+        block: NexradBlock::Empty {
+            block_reference_indicator: [0x84, 0xA5, 0x70],
+        },
+    }
+    .to_apdu()
+    .unwrap_err();
+    assert!(
+        matches!(nexrad_error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU product descriptor options")
+    );
 }
 
 #[test]

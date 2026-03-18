@@ -2,6 +2,9 @@ use crate::error::{Gdl90Error, Result};
 pub const UAT_UPLINK_PAYLOAD_LEN: usize = 432;
 pub const UAT_HEADER_LEN: usize = 8;
 pub const APPLICATION_DATA_LEN: usize = 424;
+pub const MAX_APDU_LEN: usize = 422;
+pub const MIN_APDU_HEADER_LEN: usize = 4;
+pub const MAX_APDU_PAYLOAD_LEN: usize = MAX_APDU_LEN - MIN_APDU_HEADER_LEN;
 pub const GENERIC_TEXT_PRODUCT_ID: u16 = 413;
 pub const NEXRAD_PRODUCT_ID: u16 = 63;
 pub const DLAC_RECORD_SEPARATOR: char = '\u{001E}';
@@ -171,12 +174,12 @@ impl InformationFrame {
         Apdu::from_bytes(&self.data)
     }
 
-    pub fn from_apdu(apdu: &Apdu) -> Self {
-        Self {
+    pub fn from_apdu(apdu: &Apdu) -> Result<Self> {
+        Ok(Self {
             reserved: 0,
             frame_type: FrameType::FisBApdu,
-            data: apdu.to_bytes(),
-        }
+            data: apdu.to_bytes()?,
+        })
     }
 }
 
@@ -188,27 +191,53 @@ pub struct Apdu {
 
 impl Apdu {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 4 {
+        if bytes.len() < MIN_APDU_HEADER_LEN {
             return Err(Gdl90Error::InvalidLength {
                 context: "APDU",
                 expected: "at least 4 bytes",
                 actual: bytes.len(),
             });
         }
+        if bytes.len() > MAX_APDU_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "APDU",
+                expected: "at most 422 bytes",
+                actual: bytes.len(),
+            });
+        }
 
         let mut header = [0u8; 4];
         header.copy_from_slice(&bytes[..4]);
-        Ok(Self {
-            header: ApduHeader::from_bytes(header),
+        let header = ApduHeader::from_bytes(header);
+        header.validate_supported_by_current_parser()?;
+
+        let apdu = Self {
+            header,
             payload: bytes[4..].to_vec(),
-        })
+        };
+        apdu.validate_payload_len()?;
+        Ok(apdu)
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        self.header.validate_supported_by_current_parser()?;
+        self.validate_payload_len()?;
+
         let mut out = Vec::with_capacity(4 + self.payload.len());
-        out.extend_from_slice(&self.header.to_bytes());
+        out.extend_from_slice(&self.header.to_bytes()?);
         out.extend_from_slice(&self.payload);
-        out
+        Ok(out)
+    }
+
+    fn validate_payload_len(&self) -> Result<()> {
+        if self.payload.len() > MAX_APDU_PAYLOAD_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "APDU payload",
+                expected: "at most 418 bytes",
+                actual: self.payload.len(),
+            });
+        }
+        Ok(())
     }
 
     pub fn as_generic_text(&self) -> Result<GenericTextApdu> {
@@ -266,6 +295,34 @@ pub struct ApduHeader {
 }
 
 impl ApduHeader {
+    pub fn validate(self) -> Result<()> {
+        if self.product_id > 0x07FF {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU product id",
+                details: "must fit in 11 bits".to_string(),
+            });
+        }
+        if self.time_option > 0x03 {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU time option",
+                details: "must fit in 2 bits".to_string(),
+            });
+        }
+        if self.hours > 0x1F {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU hours",
+                details: "must fit in 5 bits".to_string(),
+            });
+        }
+        if self.minutes > 0x3F {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU minutes",
+                details: "must fit in 6 bits".to_string(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn from_bytes(bytes: [u8; 4]) -> Self {
         let word = u32::from_be_bytes(bytes);
         Self {
@@ -280,7 +337,43 @@ impl ApduHeader {
         }
     }
 
-    pub fn to_bytes(self) -> [u8; 4] {
+    pub fn has_product_descriptor_options(self) -> bool {
+        self.application_flag || self.geo_flag || self.product_file_flag
+    }
+
+    pub fn validate_supported_by_current_parser(self) -> Result<()> {
+        self.validate()?;
+
+        if self.has_product_descriptor_options() {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU product descriptor options",
+                details: "optional product descriptor fields are not implemented".to_string(),
+            });
+        }
+        if self.segmentation_flag {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU segmentation",
+                details: "segmented APDUs are not implemented".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_minimal_uat(self) -> Result<()> {
+        self.validate_supported_by_current_parser()?;
+        if self.time_option != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU time option",
+                details: "documented minimal UAT APDU headers use time option 0".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn to_bytes(self) -> Result<[u8; 4]> {
+        self.validate()?;
+
         let mut word = 0u32;
         word |= (self.application_flag as u32) << 31;
         word |= (self.geo_flag as u32) << 30;
@@ -290,7 +383,7 @@ impl ApduHeader {
         word |= (u32::from(self.time_option & 0x03)) << 15;
         word |= (u32::from(self.hours & 0x1F)) << 10;
         word |= (u32::from(self.minutes & 0x3F)) << 4;
-        word.to_be_bytes()
+        Ok(word.to_be_bytes())
     }
 }
 
@@ -311,29 +404,65 @@ impl GenericTextApdu {
             }
             records.push(GenericTextRecord::parse(trimmed)?);
         }
-        Ok(Self {
+        let decoded = Self {
             header: apdu.header,
             records,
-        })
+        };
+        decoded.validate()?;
+        Ok(decoded)
     }
 
     pub fn to_apdu(&self) -> Result<Apdu> {
+        self.validate()?;
+
         let mut text = String::new();
         for record in &self.records {
             text.push_str(&record.render());
             text.push(DLAC_RECORD_SEPARATOR);
         }
-        Ok(Apdu {
+        let apdu = Apdu {
             header: self.header,
             payload: encode_dlac(&text)?,
-        })
+        };
+        apdu.validate_payload_len()?;
+        Ok(apdu)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.header.product_id != GENERIC_TEXT_PRODUCT_ID {
+            return Err(Gdl90Error::InvalidField {
+                field: "product id",
+                details: format!(
+                    "expected generic text product id {GENERIC_TEXT_PRODUCT_ID}, got {}",
+                    self.header.product_id
+                ),
+            });
+        }
+        self.header.validate_minimal_uat()?;
+        if self.records.is_empty() {
+            return Err(Gdl90Error::InvalidField {
+                field: "generic text APDU",
+                details: "must contain at least one text record".to_string(),
+            });
+        }
+
+        let mut total_encoded_len = 0usize;
+        for record in &self.records {
+            record.validate_metar_taf_composition()?;
+            total_encoded_len += encoded_generic_text_record_len(record)?;
+        }
+        if total_encoded_len > MAX_APDU_PAYLOAD_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "Generic Text APDU payload",
+                expected: "at most 418 bytes",
+                actual: total_encoded_len,
+            });
+        }
+        Ok(())
     }
 
     pub fn validate_records(&self) -> Result<()> {
-        for record in &self.records {
-            record.validate_metar_taf_composition()?;
-        }
-        Ok(())
+        self.validate()
     }
 }
 
@@ -522,17 +651,37 @@ pub struct NexradApdu {
 
 impl NexradApdu {
     pub fn from_apdu(apdu: &Apdu) -> Result<Self> {
-        Ok(Self {
+        let decoded = Self {
             header: apdu.header,
             block: NexradBlock::from_payload(&apdu.payload)?,
-        })
+        };
+        decoded.validate()?;
+        Ok(decoded)
     }
 
-    pub fn to_apdu(&self) -> Apdu {
-        Apdu {
+    pub fn to_apdu(&self) -> Result<Apdu> {
+        self.validate()?;
+
+        let apdu = Apdu {
             header: self.header,
             payload: self.block.to_payload(),
+        };
+        apdu.validate_payload_len()?;
+        Ok(apdu)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.header.product_id != NEXRAD_PRODUCT_ID {
+            return Err(Gdl90Error::InvalidField {
+                field: "product id",
+                details: format!(
+                    "expected NEXRAD product id {NEXRAD_PRODUCT_ID}, got {}",
+                    self.header.product_id
+                ),
+            });
         }
+        self.header.validate_minimal_uat()?;
+        self.block.validate()
     }
 }
 
@@ -606,6 +755,46 @@ impl NexradBlock {
                 out
             }
             Self::Unparsed { raw } => raw.clone(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::Empty { .. } => Ok(()),
+            Self::RunLengthEncoded { runs, .. } => {
+                let total: usize = runs.iter().map(|run| run.count as usize).sum();
+                if total != 128 {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "NEXRAD run-length block",
+                        details: format!("runs expand to {total} bins instead of 128"),
+                    });
+                }
+                for run in runs {
+                    if !(1..=32).contains(&run.count) {
+                        return Err(Gdl90Error::InvalidField {
+                            field: "NEXRAD run length",
+                            details: format!("count {} is outside 1..=32", run.count),
+                        });
+                    }
+                    if run.intensity > 7 {
+                        return Err(Gdl90Error::InvalidField {
+                            field: "NEXRAD intensity",
+                            details: format!("intensity {} is outside 0..=7", run.intensity),
+                        });
+                    }
+                }
+                Ok(())
+            }
+            Self::Unparsed { raw } => {
+                if raw.len() < 3 {
+                    return Err(Gdl90Error::InvalidLength {
+                        context: "NEXRAD APDU payload",
+                        expected: "at least 3 bytes",
+                        actual: raw.len(),
+                    });
+                }
+                Ok(())
+            }
         }
     }
 
@@ -735,6 +924,20 @@ fn encode_dlac(text: &str) -> Result<Vec<u8>> {
         index += 4;
     }
     Ok(out)
+}
+
+fn encoded_generic_text_record_len(record: &GenericTextRecord) -> Result<usize> {
+    let mut text = record.render();
+    text.push(DLAC_RECORD_SEPARATOR);
+    let encoded = encode_dlac(&text)?;
+    if encoded.len() > MAX_APDU_PAYLOAD_LEN {
+        return Err(Gdl90Error::InvalidLength {
+            context: "generic text record",
+            expected: "at most 418 bytes",
+            actual: encoded.len(),
+        });
+    }
+    Ok(encoded.len())
 }
 
 fn decode_dlac_char(value: u8) -> char {

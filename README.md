@@ -56,7 +56,8 @@ This crate supports:
 - Uplink payload parsing for the structures documented in sections 4 and 5
   - UAT uplink payload container
   - Information Frames
-  - APDU headers
+  - validated minimal APDU headers
+  - explicit rejection of unsupported APDU descriptor options and segmentation
   - typed FIS-B product routing
   - Generic textual DLAC APDUs
   - METAR/TAF record composition validation, including `NIL=` handling
@@ -210,7 +211,7 @@ cargo test
 
 - `3.6`: bit-level decoding of State Vector, Mode Status, and Auxiliary State Vector fields still needs the RTCA `DO-282` formulas.
 - `4.1.1`: the 8-byte UAT-specific uplink header bit layout is still deferred by the Garmin ICD to `DO-282`.
-- `4.3`: optional APDU fields and segmentation remain only partially described in the supplied material.
+- `4.3`: minimal independent APDUs are implemented and validated, but optional descriptor fields and segmented APDUs still need the external RTCA definitions.
 - `4.4` and `4.5`: additional FIS-B products still require the FAA product registry definitions.
 - `5.1`: exact NEXRAD geo block-reference semantics remain external-spec dependent.
 - `5.2`: exact exhaustive DLAC Appendix K coverage is still not guaranteed without the referenced RTCA appendix.

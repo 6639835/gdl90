@@ -159,7 +159,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             section: "4.3",
             title: "APDU Header and Payload",
             state: SupportState::Partial,
-            notes: "Minimal 32-bit APDU headers and independent APDUs are supported; optional fields and segmentation remain external-spec dependent.",
+            notes: "Minimal 32-bit APDU headers and independent APDUs are validated and supported; optional descriptor fields and segmentation are detected and rejected because the external RTCA definitions are not available.",
         },
         SectionSupportEntry {
             section: "4.4",
