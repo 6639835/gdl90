@@ -225,6 +225,21 @@ impl Apdu {
         }
         NexradApdu::from_apdu(self)
     }
+
+    pub fn decode_product(&self) -> Result<FisbProduct> {
+        match self.header.product_id {
+            GENERIC_TEXT_PRODUCT_ID => Ok(FisbProduct::GenericText(self.as_generic_text()?)),
+            NEXRAD_PRODUCT_ID => Ok(FisbProduct::Nexrad(self.as_nexrad()?)),
+            _ => Ok(FisbProduct::Unknown(self.clone())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FisbProduct {
+    GenericText(GenericTextApdu),
+    Nexrad(NexradApdu),
+    Unknown(Apdu),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,11 +334,35 @@ impl TextQualifier {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenericTextRecordKind {
+    Metar,
+    Taf,
+    Other,
+}
+
+impl GenericTextRecordKind {
+    pub fn from_record_type(record_type: &str) -> Self {
+        match record_type {
+            "METAR" => Self::Metar,
+            "TAF" => Self::Taf,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenericTextField {
+    Text(String),
+    Nil,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenericTextRecord {
+    pub kind: GenericTextRecordKind,
     pub record_type: String,
-    pub location: String,
-    pub record_time: String,
+    pub location: GenericTextField,
+    pub record_time: GenericTextField,
     pub qualifier: Option<TextQualifier>,
     pub text: String,
 }
@@ -355,6 +394,7 @@ impl GenericTextRecord {
                 details: "missing record time".to_string(),
             })?
             .to_string();
+        let kind = GenericTextRecordKind::from_record_type(&record_type);
 
         let fourth = parts.next().ok_or(Gdl90Error::InvalidField {
             field: "generic text record",
@@ -381,9 +421,10 @@ impl GenericTextRecord {
         };
 
         Ok(Self {
+            kind,
             record_type,
-            location,
-            record_time,
+            location: parse_generic_text_field(location),
+            record_time: parse_generic_text_field(record_time),
             qualifier,
             text,
         })
@@ -392,7 +433,9 @@ impl GenericTextRecord {
     pub fn render(&self) -> String {
         let mut out = format!(
             "{} {} {}",
-            self.record_type, self.location, self.record_time
+            self.record_type,
+            render_generic_text_field(&self.location),
+            render_generic_text_field(&self.record_time)
         );
         if let Some(qualifier) = self.qualifier {
             out.push(' ');
@@ -401,6 +444,50 @@ impl GenericTextRecord {
         out.push(' ');
         out.push_str(&self.text);
         out
+    }
+
+    pub fn validate_metar_taf_composition(&self) -> Result<()> {
+        match self.kind {
+            GenericTextRecordKind::Metar | GenericTextRecordKind::Taf => {
+                if self.text.contains(DLAC_RECORD_SEPARATOR) {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "generic text record text",
+                        details: "text report must not contain record separator".to_string(),
+                    });
+                }
+
+                let qualifier_ok = matches!(
+                    (self.kind, self.qualifier),
+                    (GenericTextRecordKind::Metar, None | Some(TextQualifier::SpecialReport))
+                        | (GenericTextRecordKind::Taf, None | Some(TextQualifier::Amendment))
+                );
+                if !qualifier_ok {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "generic text qualifier",
+                        details: "qualifier does not match METAR/TAF rules".to_string(),
+                    });
+                }
+
+                let location_ok = matches!(
+                    &self.location,
+                    GenericTextField::Text(value) if !value.contains(' ') && !value.is_empty()
+                ) || matches!(&self.location, GenericTextField::Nil);
+                let time_ok = matches!(
+                    &self.record_time,
+                    GenericTextField::Text(value) if !value.contains(' ') && !value.is_empty()
+                ) || matches!(&self.record_time, GenericTextField::Nil);
+
+                if !location_ok || !time_ok {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "generic text METAR/TAF structure",
+                        details: "location/time must be token fields or NIL".to_string(),
+                    });
+                }
+            }
+            GenericTextRecordKind::Other => {}
+        }
+
+        Ok(())
     }
 }
 
@@ -573,6 +660,21 @@ fn decode_dlac(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+fn parse_generic_text_field(value: String) -> GenericTextField {
+    if value == "NIL=" {
+        GenericTextField::Nil
+    } else {
+        GenericTextField::Text(value)
+    }
+}
+
+fn render_generic_text_field(value: &GenericTextField) -> &str {
+    match value {
+        GenericTextField::Text(value) => value.as_str(),
+        GenericTextField::Nil => "NIL=",
+    }
 }
 
 fn encode_dlac(text: &str) -> Result<Vec<u8>> {

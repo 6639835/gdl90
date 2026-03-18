@@ -46,7 +46,9 @@ This crate supports:
   - UAT uplink payload container
   - Information Frames
   - APDU headers
+  - typed FIS-B product routing
   - Generic textual DLAC APDUs
+  - METAR/TAF record composition validation, including `NIL=` handling
   - NEXRAD run-length block payloads
 - Control-panel ASCII messages from section 6
   - Call Sign

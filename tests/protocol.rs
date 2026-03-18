@@ -13,7 +13,8 @@ use gdl90::message::{
     VerticalFigureOfMerit,
 };
 use gdl90::uplink::{
-    ApduHeader, GenericTextApdu, GenericTextRecord, InformationFrame, NexradApdu, NexradBlock,
+    ApduHeader, FisbProduct, GenericTextApdu, GenericTextField, GenericTextRecord,
+    GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, TextQualifier,
     UatUplinkPayload,
 };
 
@@ -178,12 +179,14 @@ fn control_messages_round_trip() {
 #[test]
 fn generic_text_uplink_round_trip() {
     let record = GenericTextRecord {
+        kind: GenericTextRecordKind::Taf,
         record_type: "TAF".to_string(),
-        location: "KSLE".to_string(),
-        record_time: "260900Z".to_string(),
-        qualifier: Some(gdl90::uplink::TextQualifier::Amendment),
+        location: GenericTextField::Text("KSLE".to_string()),
+        record_time: GenericTextField::Text("260900Z".to_string()),
+        qualifier: Some(TextQualifier::Amendment),
         text: "251315 08006KT P6SM FEW060 BKN120".to_string(),
     };
+    record.validate_metar_taf_composition().unwrap();
     let apdu = GenericTextApdu {
         header: ApduHeader {
             application_flag: false,
@@ -204,6 +207,10 @@ fn generic_text_uplink_round_trip() {
     let payload = UatUplinkPayload::from_information_frames([0u8; 8], &[frame]).unwrap();
     let frames = payload.information_frames().unwrap();
     let parsed_apdu = frames[0].apdu().unwrap();
+    match parsed_apdu.decode_product().unwrap() {
+        FisbProduct::GenericText(_) => {}
+        other => panic!("expected generic text product, got {other:?}"),
+    }
     let parsed_text = parsed_apdu.as_generic_text().unwrap();
 
     assert_eq!(parsed_text.records, vec![record]);
@@ -234,6 +241,10 @@ fn nexrad_rle_block_round_trip() {
 
     let parsed = apdu.as_nexrad().unwrap();
     assert_eq!(parsed.block.decode_bins(), bins);
+    match apdu.decode_product().unwrap() {
+        FisbProduct::Nexrad(_) => {}
+        other => panic!("expected nexrad product, got {other:?}"),
+    }
 }
 
 #[test]
@@ -291,4 +302,22 @@ fn ownship_report_round_trip() {
         report.emergency_priority_code
     );
     assert_eq!(decoded.spare, report.spare);
+}
+
+#[test]
+fn generic_text_nil_fields_and_qualifier_rules_are_supported() {
+    let taf = GenericTextRecord::parse("TAF NIL= 260900Z AM TEST REPORT").unwrap();
+    assert_eq!(taf.kind, GenericTextRecordKind::Taf);
+    assert_eq!(taf.location, GenericTextField::Nil);
+    assert_eq!(taf.record_time, GenericTextField::Text("260900Z".to_string()));
+    taf.validate_metar_taf_composition().unwrap();
+
+    let metar = GenericTextRecord::parse("METAR KSLE NIL= SP TEST REPORT").unwrap();
+    assert_eq!(metar.kind, GenericTextRecordKind::Metar);
+    assert_eq!(metar.location, GenericTextField::Text("KSLE".to_string()));
+    assert_eq!(metar.record_time, GenericTextField::Nil);
+    metar.validate_metar_taf_composition().unwrap();
+
+    let invalid = GenericTextRecord::parse("METAR KSLE 260900Z AM TEST REPORT").unwrap();
+    assert!(invalid.validate_metar_taf_composition().is_err());
 }
