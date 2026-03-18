@@ -20,8 +20,8 @@ use gdl90::support::{
     section_support_matrix,
 };
 use gdl90::transport::{
-    FOREFLIGHT_DISCOVERY_PORT, FOREFLIGHT_GDL90_PORT, UdpGdl90Receiver, UdpGdl90Sender,
-    discover_foreflight_once,
+    FOREFLIGHT_DISCOVERY_PORT, FOREFLIGHT_GDL90_PORT, ForeFlightUdpSender, UdpGdl90Receiver,
+    UdpGdl90Sender, discover_foreflight_once,
 };
 
 fn main() {
@@ -210,9 +210,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("announcement: {announcement:#?}");
             if announcement.is_foreflight() {
                 println!(
-                    "suggested target: {}:{}",
-                    source.ip(),
-                    announcement.gdl90_port
+                    "suggested target: {}",
+                    announcement.target_for_source(source)
                 );
             }
         }
@@ -262,7 +261,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|value| value.parse::<u64>())
                 .transpose()?
                 .unwrap_or(1_000);
-            let sender = UdpGdl90Sender::bind("0.0.0.0:0", &target)?;
+            let sender = ForeFlightUdpSender::bind("0.0.0.0:0", &target)?;
             println!(
                 "sending demo traffic from {} to {}",
                 sender.local_addr()?,

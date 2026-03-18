@@ -2,6 +2,7 @@ use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
 
 use crate::error::{Gdl90Error, Result};
+use crate::foreflight;
 use crate::message::{FrameMessageDecoder, Message};
 
 pub const FOREFLIGHT_DISCOVERY_PORT: u16 = 63_093;
@@ -36,6 +37,48 @@ impl ForeFlightDiscoveryAnnouncement {
 
     pub fn is_foreflight(&self) -> bool {
         self.app == "ForeFlight"
+    }
+
+    pub fn target_for_source(&self, source: SocketAddr) -> SocketAddr {
+        SocketAddr::new(source.ip(), self.gdl90_port)
+    }
+}
+
+#[derive(Debug)]
+pub struct ForeFlightUdpSender {
+    inner: UdpGdl90Sender,
+}
+
+impl ForeFlightUdpSender {
+    pub fn bind(bind_addr: impl ToSocketAddrs, target: impl ToSocketAddrs) -> Result<Self> {
+        Ok(Self {
+            inner: UdpGdl90Sender::bind(bind_addr, target)?,
+        })
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    pub fn socket(&self) -> &UdpSocket {
+        self.inner.socket()
+    }
+
+    pub fn target(&self) -> SocketAddr {
+        self.inner.target()
+    }
+
+    pub fn encode_messages(messages: &[Message]) -> Result<Vec<u8>> {
+        foreflight::encode_datagram(messages)
+    }
+
+    pub fn send_message(&self, message: &Message) -> Result<usize> {
+        self.send_messages(std::slice::from_ref(message))
+    }
+
+    pub fn send_messages(&self, messages: &[Message]) -> Result<usize> {
+        let datagram = Self::encode_messages(messages)?;
+        self.inner.send_frame(&datagram)
     }
 }
 
@@ -264,6 +307,27 @@ fn extract_json_value_region<'a>(json: &'a str, key: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::{Heartbeat, HeartbeatStatus};
+
+    fn heartbeat() -> Message {
+        Message::Heartbeat(Heartbeat {
+            status: HeartbeatStatus {
+                gps_position_valid: true,
+                maintenance_required: false,
+                ident: false,
+                address_type_talkback: false,
+                gps_battery_low: false,
+                ratcs: false,
+                uat_initialized: true,
+                csa_requested: false,
+                csa_not_available: false,
+                utc_ok: true,
+            },
+            timestamp_seconds_since_midnight: 1,
+            uplink_count: 0,
+            basic_and_long_count: 0,
+        })
+    }
 
     #[test]
     fn parses_foreflight_discovery_json() {
@@ -283,6 +347,39 @@ mod tests {
             }
         );
         assert!(parsed.is_foreflight());
+    }
+
+    #[test]
+    fn derives_unicast_target_from_discovery_source() {
+        let announcement = ForeFlightDiscoveryAnnouncement {
+            app: "ForeFlight".to_string(),
+            gdl90_port: 4000,
+        };
+        let source: SocketAddr = "192.168.1.25:63093".parse().unwrap();
+        assert_eq!(
+            announcement.target_for_source(source),
+            "192.168.1.25:4000".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn foreflight_sender_encodes_only_documented_message_sets() {
+        let datagram = ForeFlightUdpSender::encode_messages(&[heartbeat()]).unwrap();
+        assert!(!datagram.is_empty());
+
+        let error = ForeFlightUdpSender::encode_messages(&[Message::Initialization(
+            crate::message::Initialization {
+                audio_test: false,
+                audio_inhibit: false,
+                cdti_ok: true,
+                csa_audio_disable: false,
+                csa_disable: false,
+            },
+        )])
+        .unwrap_err();
+        assert!(
+            matches!(error, Gdl90Error::InvalidField { field, .. } if field == "ForeFlight connectivity")
+        );
     }
 
     #[test]

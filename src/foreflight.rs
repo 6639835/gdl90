@@ -1,9 +1,98 @@
 use crate::error::{Gdl90Error, Result};
+use crate::message::Message;
 use crate::util::{decode_fixed_utf8, encode_fixed_utf8};
+use std::time::Duration;
 
 pub const FOREFLIGHT_MESSAGE_ID: u8 = 0x65;
 pub const FOREFLIGHT_ID_SUB_ID: u8 = 0x00;
 pub const FOREFLIGHT_AHRS_SUB_ID: u8 = 0x01;
+pub const FOREFLIGHT_MAX_PACKET_SIZE: usize = 1500;
+pub const FOREFLIGHT_AHRS_RATE_HZ: u8 = 5;
+pub const FOREFLIGHT_DISCOVERY_INTERVAL_SECS: u64 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForeFlightCadenceProfile {
+    pub ahrs_rate_hz: u8,
+    pub discovery_interval: Duration,
+}
+
+pub fn cadence_profile() -> ForeFlightCadenceProfile {
+    ForeFlightCadenceProfile {
+        ahrs_rate_hz: FOREFLIGHT_AHRS_RATE_HZ,
+        discovery_interval: Duration::from_secs(FOREFLIGHT_DISCOVERY_INTERVAL_SECS),
+    }
+}
+
+pub fn is_supported_message(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Heartbeat(_)
+            | Message::UplinkData(_)
+            | Message::OwnshipReport(_)
+            | Message::OwnshipGeometricAltitude(_)
+            | Message::TrafficReport(_)
+            | Message::ForeFlightId(_)
+            | Message::ForeFlightAhrs(_)
+    )
+}
+
+pub fn has_connectivity_message(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .any(|message| matches!(message, Message::Heartbeat(_) | Message::OwnshipReport(_)))
+}
+
+pub fn validate_message_set(messages: &[Message]) -> Result<()> {
+    if messages.is_empty() {
+        return Err(Gdl90Error::InvalidField {
+            field: "ForeFlight message set",
+            details: "must contain at least one message".to_string(),
+        });
+    }
+
+    if !has_connectivity_message(messages) {
+        return Err(Gdl90Error::InvalidField {
+            field: "ForeFlight connectivity",
+            details: "message set should include Heartbeat or Ownship Report".to_string(),
+        });
+    }
+
+    for message in messages {
+        if !is_supported_message(message) {
+            return Err(Gdl90Error::InvalidField {
+                field: "ForeFlight supported message set",
+                details: format!(
+                    "{} is not part of the documented ForeFlight subset",
+                    message.kind_name()
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+pub fn encode_datagram(messages: &[Message]) -> Result<Vec<u8>> {
+    validate_message_set(messages)?;
+
+    let mut datagram = Vec::new();
+    for message in messages {
+        datagram.extend_from_slice(&message.encode_frame()?);
+    }
+
+    if datagram.len() >= FOREFLIGHT_MAX_PACKET_SIZE {
+        return Err(Gdl90Error::InvalidField {
+            field: "ForeFlight datagram size",
+            details: format!(
+                "encoded datagram is {} bytes, must be smaller than {}",
+                datagram.len(),
+                FOREFLIGHT_MAX_PACKET_SIZE
+            ),
+        });
+    }
+
+    Ok(datagram)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometricAltitudeDatum {
@@ -37,6 +126,16 @@ impl InternetPolicy {
             Self::Reserved(bits) => bits & 0x03,
         }
     }
+
+    fn validate(self) -> Result<()> {
+        if matches!(self, Self::Reserved(_)) {
+            return Err(Gdl90Error::InvalidField {
+                field: "ForeFlight internet policy",
+                details: "reserved policy value is not valid for transmitted messages".to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +165,17 @@ impl ForeFlightCapabilities {
         };
         datum | ((self.internet_policy.bits() as u32) << 1) | (self.reserved_bits & !0x07)
     }
+
+    pub fn validate(self) -> Result<()> {
+        self.internet_policy.validate()?;
+        if self.reserved_bits != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "ForeFlight capabilities reserved bits",
+                details: "reserved bits must be zero".to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +189,16 @@ pub struct ForeFlightIdMessage {
 
 impl ForeFlightIdMessage {
     pub const LEN: usize = 39;
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != 1 {
+            return Err(Gdl90Error::InvalidField {
+                field: "ForeFlight ID version",
+                details: format!("{} is not the documented version 1", self.version),
+            });
+        }
+        self.capabilities.validate()
+    }
 
     pub fn decode(payload: &[u8]) -> Result<Self> {
         if payload.len() != Self::LEN {
@@ -118,6 +238,8 @@ impl ForeFlightIdMessage {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+
         let mut out = Vec::with_capacity(Self::LEN);
         out.push(FOREFLIGHT_MESSAGE_ID);
         out.push(FOREFLIGHT_ID_SUB_ID);
@@ -310,4 +432,79 @@ fn encode_optional_signed_range(
         invalid
     };
     Ok(raw.to_be_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::{Heartbeat, HeartbeatStatus};
+
+    fn heartbeat() -> Message {
+        Message::Heartbeat(Heartbeat {
+            status: HeartbeatStatus {
+                gps_position_valid: true,
+                maintenance_required: false,
+                ident: false,
+                address_type_talkback: false,
+                gps_battery_low: false,
+                ratcs: false,
+                uat_initialized: true,
+                csa_requested: false,
+                csa_not_available: false,
+                utc_ok: true,
+            },
+            timestamp_seconds_since_midnight: 1,
+            uplink_count: 0,
+            basic_and_long_count: 0,
+        })
+    }
+
+    #[test]
+    fn cadence_profile_matches_spec() {
+        let profile = cadence_profile();
+        assert_eq!(profile.ahrs_rate_hz, 5);
+        assert_eq!(profile.discovery_interval, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn foreflight_message_set_requires_connectivity_message() {
+        let error = validate_message_set(&[Message::ForeFlightAhrs(ForeFlightAhrsMessage {
+            roll_tenths_degrees: None,
+            pitch_tenths_degrees: None,
+            heading: None,
+            indicated_airspeed_knots: None,
+            true_airspeed_knots: None,
+        })])
+        .unwrap_err();
+        assert!(
+            matches!(error, Gdl90Error::InvalidField { field, .. } if field == "ForeFlight connectivity")
+        );
+    }
+
+    #[test]
+    fn foreflight_message_set_rejects_unsupported_messages() {
+        let error = validate_message_set(&[
+            heartbeat(),
+            Message::Initialization(crate::message::Initialization {
+                audio_test: false,
+                audio_inhibit: false,
+                cdti_ok: true,
+                csa_audio_disable: false,
+                csa_disable: false,
+            }),
+        ])
+        .unwrap_err();
+        assert!(
+            matches!(error, Gdl90Error::InvalidField { field, .. } if field == "ForeFlight supported message set")
+        );
+    }
+
+    #[test]
+    fn foreflight_datagram_enforces_mtu() {
+        let oversized = vec![heartbeat(); 200];
+        let error = encode_datagram(&oversized).unwrap_err();
+        assert!(
+            matches!(error, Gdl90Error::InvalidField { field, .. } if field == "ForeFlight datagram size")
+        );
+    }
 }

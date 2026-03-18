@@ -26,10 +26,16 @@ This crate supports:
 - ForeFlight extension messages
   - ID message (`0x65/0x00`)
   - AHRS message (`0x65/0x01`)
+  - supported-message subset validation for ForeFlight UDP datagrams
+  - connectivity-message enforcement (`Heartbeat` or `Ownship Report`)
+  - packet-size guard for the documented sub-1500-byte MTU recommendation
+  - discovery interval and AHRS cadence constants from the extension doc
 - UDP transport helpers
   - send framed GDL90 datagrams
   - receive and decode UDP datagrams
   - discover ForeFlight targets from the port 63093 announcement
+  - derive unicast GDL90 targets from ForeFlight discovery broadcasts
+  - send only ForeFlight-valid UDP datagrams through a dedicated sender
 - Session tooling
   - read and write recorded UDP datagram files
   - decode saved sessions into messages
@@ -80,7 +86,7 @@ src/
   session.rs      Recorded datagram files, hex parsing, and replay helpers
   analysis.rs     Session summary and validation helpers
   support.rs      Section coverage matrix and physical interface profiles
-  transport.rs    UDP send/receive helpers and ForeFlight discovery support
+  transport.rs    UDP send/receive helpers, ForeFlight discovery, and validated ForeFlight sending
   uplink.rs       UAT uplink payloads, I-frames, APDUs, DLAC text, NEXRAD blocks
   foreflight.rs   ForeFlight extension messages
   control.rs      Garmin control-panel ASCII messages
@@ -170,7 +176,7 @@ Commands:
 - `discover`: wait for a ForeFlight UDP discovery broadcast
 - `listen`: listen for UDP GDL90 traffic and print decoded messages
 - `capture`: record live UDP datagrams into a session file
-- `send-demo`: send a recurring demo heartbeat/ownship/geo-alt/ForeFlight set to a target
+- `send-demo`: send a recurring ForeFlight-valid demo heartbeat/ownship/geo-alt/ID/AHRS set to a target
 - `replay-file`: replay a recorded session file to a UDP target
 
 ## Session File Format
