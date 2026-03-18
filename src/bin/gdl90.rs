@@ -15,6 +15,10 @@ use gdl90::message::{
 };
 use gdl90::report::{build_session_report, render_json_report, render_text_report};
 use gdl90::session::{RecordedDatagram, append_datagram, decode_hex, read_datagram_file};
+use gdl90::support::{
+    SupportState, control_panel_profiles, missing_sections, rs422_bus_profile, rs422_connections,
+    section_support_matrix,
+};
 use gdl90::transport::{
     FOREFLIGHT_DISCOVERY_PORT, FOREFLIGHT_GDL90_PORT, UdpGdl90Receiver, UdpGdl90Sender,
     discover_foreflight_once,
@@ -80,6 +84,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 println!("wrote {}", output.display());
             } else {
                 println!("{json}");
+            }
+        }
+        Some("support-status") => {
+            let only_missing = matches!(args.next().as_deref(), Some("--missing"));
+            let entries = if only_missing {
+                missing_sections()
+            } else {
+                section_support_matrix()
+            };
+            for entry in entries {
+                println!(
+                    "{} [{}] {}",
+                    entry.section,
+                    render_support_state(entry.state),
+                    entry.title
+                );
+                println!("  {}", entry.notes);
+            }
+        }
+        Some("interface-profiles") => {
+            let rs422 = rs422_bus_profile();
+            println!(
+                "RS-422 bus: {:?} {} baud {}{}{} {:?} {:?}",
+                rs422.signal_type,
+                rs422.baud_rate,
+                rs422.start_bits,
+                rs422.data_bits,
+                rs422.stop_bits,
+                rs422.parity,
+                rs422.flow_control
+            );
+            for connection in rs422_connections() {
+                println!(
+                    "  {} | {} | {}",
+                    connection.signal_name, connection.direction, connection.connector_pin
+                );
+            }
+            println!("Control panel profiles:");
+            for profile in control_panel_profiles() {
+                println!(
+                    "  {:?} {} baud {}{}{} {:?} {:?}",
+                    profile.signal_type,
+                    profile.baud_rate,
+                    profile.start_bits,
+                    profile.data_bits,
+                    profile.stop_bits,
+                    profile.parity,
+                    profile.flow_control
+                );
             }
         }
         Some("analyze-file") => {
@@ -265,6 +318,16 @@ fn boxed_string_error(error: String) -> Box<dyn std::error::Error> {
     error.into()
 }
 
+fn render_support_state(state: SupportState) -> &'static str {
+    match state {
+        SupportState::Complete => "complete",
+        SupportState::Partial => "partial",
+        SupportState::NotImplemented => "not-implemented",
+        SupportState::BlockedByExternalSpec => "blocked-by-external-spec",
+        SupportState::OutOfScopeBehavior => "out-of-scope-behavior",
+    }
+}
+
 fn demo_messages(tick: u32) -> Vec<Message> {
     let timestamp = tick % 86_400;
     let lat = 37.6188056 + (tick as f64 * 0.0001);
@@ -348,6 +411,8 @@ fn print_usage() {
     println!("  decode-file <session-file>");
     println!("  report-file <session-file>");
     println!("  report-file-json <session-file> [output-file]");
+    println!("  support-status [--missing]");
+    println!("  interface-profiles");
     println!("  analyze-file <session-file>");
     println!("  validate-file <session-file>");
     println!("  listen [bind-addr]");

@@ -79,6 +79,7 @@ src/
   report.rs       Detailed text and JSON reporting for recorded sessions
   session.rs      Recorded datagram files, hex parsing, and replay helpers
   analysis.rs     Session summary and validation helpers
+  support.rs      Section coverage matrix and physical interface profiles
   transport.rs    UDP send/receive helpers and ForeFlight discovery support
   uplink.rs       UAT uplink payloads, I-frames, APDUs, DLAC text, NEXRAD blocks
   foreflight.rs   ForeFlight extension messages
@@ -144,6 +145,8 @@ cargo run --bin gdl90 -- decode-stream 7E008141DBD00802B38B7E7E0B00C88008787E
 cargo run --bin gdl90 -- decode-file tests/data/demo_session.txt
 cargo run --bin gdl90 -- report-file tests/data/demo_session.txt
 cargo run --bin gdl90 -- report-file-json tests/data/demo_session.txt report.json
+cargo run --bin gdl90 -- support-status --missing
+cargo run --bin gdl90 -- interface-profiles
 cargo run --bin gdl90 -- analyze-file tests/data/demo_session.txt
 cargo run --bin gdl90 -- validate-file tests/data/demo_session.txt
 cargo run --bin gdl90 -- discover
@@ -160,6 +163,8 @@ Commands:
 - `decode-file`: decode every recorded datagram in a session file
 - `report-file`: print a detailed per-datagram/per-frame text report
 - `report-file-json`: export the same report structure as JSON
+- `support-status`: print the built-in section coverage matrix
+- `interface-profiles`: print RS-422 and control-panel serial profiles from the spec
 - `analyze-file`: print a session summary and per-message counts
 - `validate-file`: fail if any recorded datagram cannot be decoded cleanly
 - `discover`: wait for a ForeFlight UDP discovery broadcast

@@ -476,8 +476,13 @@ impl GenericTextRecord {
 
                 let qualifier_ok = matches!(
                     (self.kind, self.qualifier),
-                    (GenericTextRecordKind::Metar, None | Some(TextQualifier::SpecialReport))
-                        | (GenericTextRecordKind::Taf, None | Some(TextQualifier::Amendment))
+                    (
+                        GenericTextRecordKind::Metar,
+                        None | Some(TextQualifier::SpecialReport)
+                    ) | (
+                        GenericTextRecordKind::Taf,
+                        None | Some(TextQualifier::Amendment)
+                    )
                 );
                 if !qualifier_ok {
                     return Err(Gdl90Error::InvalidField {

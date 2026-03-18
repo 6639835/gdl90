@@ -16,6 +16,7 @@ pub mod frame;
 pub mod message;
 pub mod report;
 pub mod session;
+pub mod support;
 pub mod transport;
 pub mod uplink;
 mod util;

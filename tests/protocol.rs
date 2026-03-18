@@ -310,7 +310,10 @@ fn generic_text_nil_fields_and_qualifier_rules_are_supported() {
     let taf = GenericTextRecord::parse("TAF NIL= 260900Z AM TEST REPORT").unwrap();
     assert_eq!(taf.kind, GenericTextRecordKind::Taf);
     assert_eq!(taf.location, GenericTextField::Nil);
-    assert_eq!(taf.record_time, GenericTextField::Text("260900Z".to_string()));
+    assert_eq!(
+        taf.record_time,
+        GenericTextField::Text("260900Z".to_string())
+    );
     taf.validate_metar_taf_composition().unwrap();
 
     let metar = GenericTextRecord::parse("METAR KSLE NIL= SP TEST REPORT").unwrap();
