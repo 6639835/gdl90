@@ -1463,6 +1463,10 @@ pub enum NexradBlock {
     Empty {
         block_reference_indicator: [u8; 3],
     },
+    EmptyBitmap {
+        block_reference_indicator: [u8; 3],
+        bitmap_bytes: Vec<u8>,
+    },
     RunLengthEncoded {
         block_reference_indicator: [u8; 3],
         runs: Vec<NexradRun>,
@@ -1480,6 +1484,14 @@ pub struct NexradBlockReference {
     pub block_number: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NexradGeoBounds {
+    pub north_latitude_deg: f64,
+    pub south_latitude_deg: f64,
+    pub west_longitude_deg: f64,
+    pub east_longitude_deg: f64,
+}
+
 impl NexradBlock {
     pub fn from_payload(payload: &[u8]) -> Result<Self> {
         if payload.len() < 3 {
@@ -1495,6 +1507,14 @@ impl NexradBlock {
         if payload.len() == 3 {
             return Ok(Self::Empty {
                 block_reference_indicator: reference,
+            });
+        }
+
+        let bitmap_len = (payload[3] & 0x0F) as usize;
+        if (reference[0] & 0x80) == 0 && payload.len() == bitmap_len + 4 {
+            return Ok(Self::EmptyBitmap {
+                block_reference_indicator: reference,
+                bitmap_bytes: payload[3..].to_vec(),
             });
         }
 
@@ -1524,6 +1544,15 @@ impl NexradBlock {
             Self::Empty {
                 block_reference_indicator,
             } => block_reference_indicator.to_vec(),
+            Self::EmptyBitmap {
+                block_reference_indicator,
+                bitmap_bytes,
+            } => {
+                let mut out = Vec::with_capacity(3 + bitmap_bytes.len());
+                out.extend_from_slice(block_reference_indicator);
+                out.extend_from_slice(bitmap_bytes);
+                out
+            }
             Self::RunLengthEncoded {
                 block_reference_indicator,
                 runs,
@@ -1542,6 +1571,27 @@ impl NexradBlock {
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Empty { .. } => Ok(()),
+            Self::EmptyBitmap { bitmap_bytes, .. } => {
+                if bitmap_bytes.is_empty() {
+                    return Err(Gdl90Error::InvalidLength {
+                        context: "NEXRAD empty-element bitmap",
+                        expected: "at least 1 byte",
+                        actual: 0,
+                    });
+                }
+                let declared_len = (bitmap_bytes[0] & 0x0F) as usize;
+                if declared_len + 1 != bitmap_bytes.len() {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "NEXRAD empty-element bitmap length",
+                        details: format!(
+                            "declared {} bytes, actual {}",
+                            declared_len + 1,
+                            bitmap_bytes.len()
+                        ),
+                    });
+                }
+                Ok(())
+            }
             Self::RunLengthEncoded { runs, .. } => {
                 let total: usize = runs.iter().map(|run| run.count as usize).sum();
                 if total != 128 {
@@ -1582,6 +1632,7 @@ impl NexradBlock {
     pub fn decode_bins(&self) -> Vec<u8> {
         match self {
             Self::Empty { .. } => vec![0u8; 128],
+            Self::EmptyBitmap { .. } => Vec::new(),
             Self::RunLengthEncoded { runs, .. } => {
                 let mut bins = Vec::with_capacity(128);
                 for run in runs {
@@ -1650,6 +1701,10 @@ impl NexradBlock {
             Self::Empty {
                 block_reference_indicator,
             }
+            | Self::EmptyBitmap {
+                block_reference_indicator,
+                ..
+            }
             | Self::RunLengthEncoded {
                 block_reference_indicator,
                 ..
@@ -1663,6 +1718,23 @@ impl NexradBlock {
     pub fn block_reference(&self) -> Option<NexradBlockReference> {
         let raw = self.block_reference_indicator()?;
         Some(NexradBlockReference::from_raw(raw))
+    }
+
+    pub fn empty_block_references(&self) -> Option<Vec<NexradBlockReference>> {
+        match self {
+            Self::Empty {
+                block_reference_indicator,
+            } => Some(vec![NexradBlockReference::from_raw(
+                *block_reference_indicator,
+            )]),
+            Self::EmptyBitmap {
+                block_reference_indicator,
+                bitmap_bytes,
+            } => {
+                decode_nexrad_empty_block_references(*block_reference_indicator, bitmap_bytes).ok()
+            }
+            Self::RunLengthEncoded { .. } | Self::Unparsed { .. } => None,
+        }
     }
 }
 
@@ -1772,6 +1844,120 @@ impl NexradBlockReference {
             (self.block_number & 0xFF) as u8,
         ]
     }
+
+    pub fn scale_multiplier(self) -> Option<u8> {
+        match self.scale {
+            0 => Some(1),
+            1 => Some(5),
+            2 => Some(9),
+            _ => None,
+        }
+    }
+
+    pub fn geo_bounds(self) -> Option<NexradGeoBounds> {
+        let scale_multiplier = self.scale_multiplier()? as f64;
+        let mut block_number = self.block_number;
+        if block_number >= NEXRAD_WIDE_BLOCK_THRESHOLD {
+            block_number &= !1;
+        }
+
+        let mut north_latitude_deg =
+            NEXRAD_BLOCK_HEIGHT_DEGREES * ((block_number / NEXRAD_BLOCKS_PER_RING) as f64);
+        let mut west_longitude_deg =
+            (block_number % NEXRAD_BLOCKS_PER_RING) as f64 * NEXRAD_BLOCK_WIDTH_DEGREES;
+
+        let longitude_width_deg = if block_number >= NEXRAD_WIDE_BLOCK_THRESHOLD {
+            NEXRAD_WIDE_BLOCK_WIDTH_DEGREES * scale_multiplier
+        } else {
+            NEXRAD_BLOCK_WIDTH_DEGREES * scale_multiplier
+        };
+        let latitude_height_deg = NEXRAD_BLOCK_HEIGHT_DEGREES * scale_multiplier;
+
+        if self.north {
+            north_latitude_deg += NEXRAD_BLOCK_HEIGHT_DEGREES;
+        } else {
+            north_latitude_deg = -north_latitude_deg;
+        }
+        if west_longitude_deg > 180.0 {
+            west_longitude_deg -= 360.0;
+        }
+
+        Some(NexradGeoBounds {
+            north_latitude_deg,
+            south_latitude_deg: north_latitude_deg - latitude_height_deg,
+            west_longitude_deg,
+            east_longitude_deg: west_longitude_deg + longitude_width_deg,
+        })
+    }
+}
+
+const NEXRAD_BLOCK_WIDTH_DEGREES: f64 = 48.0 / 60.0;
+const NEXRAD_WIDE_BLOCK_WIDTH_DEGREES: f64 = 96.0 / 60.0;
+const NEXRAD_BLOCK_HEIGHT_DEGREES: f64 = 4.0 / 60.0;
+const NEXRAD_WIDE_BLOCK_THRESHOLD: u32 = 405_000;
+const NEXRAD_BLOCKS_PER_RING: u32 = 450;
+
+fn decode_nexrad_empty_block_references(
+    block_reference_indicator: [u8; 3],
+    bitmap_bytes: &[u8],
+) -> Result<Vec<NexradBlockReference>> {
+    if bitmap_bytes.is_empty() {
+        return Err(Gdl90Error::InvalidLength {
+            context: "NEXRAD empty-element bitmap",
+            expected: "at least 1 byte",
+            actual: 0,
+        });
+    }
+
+    let declared_len = (bitmap_bytes[0] & 0x0F) as usize;
+    if declared_len + 1 != bitmap_bytes.len() {
+        return Err(Gdl90Error::InvalidField {
+            field: "NEXRAD empty-element bitmap length",
+            details: format!(
+                "declared {} bytes, actual {}",
+                declared_len + 1,
+                bitmap_bytes.len()
+            ),
+        });
+    }
+
+    let reference = NexradBlockReference::from_raw(block_reference_indicator);
+    let block_number = reference.block_number as i64;
+    let (row_start, row_size) = if reference.block_number >= NEXRAD_WIDE_BLOCK_THRESHOLD {
+        (
+            block_number - ((block_number - NEXRAD_WIDE_BLOCK_THRESHOLD as i64) % 225),
+            225i64,
+        )
+    } else {
+        (
+            block_number - (block_number % NEXRAD_BLOCKS_PER_RING as i64),
+            NEXRAD_BLOCKS_PER_RING as i64,
+        )
+    };
+    let row_offset = block_number - row_start;
+
+    let mut references = Vec::new();
+    for (index, byte) in bitmap_bytes.iter().enumerate() {
+        let bits = if index == 0 {
+            (byte & 0xF0) | 0x08
+        } else {
+            *byte
+        };
+        for bit in 0..8usize {
+            if (bits & (1 << bit)) == 0 {
+                continue;
+            }
+            let row_x = (row_offset + (index as i64 * 8) + bit as i64 - 3).rem_euclid(row_size);
+            references.push(NexradBlockReference {
+                is_run_length_encoded: false,
+                north: reference.north,
+                scale: reference.scale,
+                block_number: (row_start + row_x) as u32,
+            });
+        }
+    }
+
+    Ok(references)
 }
 
 fn encode_apdu_time_option(has_month_day: bool, has_seconds: bool) -> Result<u8> {

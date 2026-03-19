@@ -433,8 +433,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4.4.2",
             "NEXRAD Graphic Product",
-            SupportState::Partial,
-            "NEXRAD APDUs, run-length blocks, and intensity semantics are implemented, but exact geographic interpretation remains external-spec dependent.",
+            SupportState::Complete,
+            "NEXRAD APDUs decode run-length and empty-element blocks, typed intensity semantics, and geographic block bounds from the block reference indicator.",
         ),
         support_entry(
             "4.5",
@@ -451,14 +451,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "5.1",
             "Type 4 NEXRAD Precipitation Image – Global Block Representation",
-            SupportState::Partial,
-            "Run-length payloads, typed intensity semantics from Table 20, and Garmin-ICD-aligned block-reference parsing are implemented; exact geo semantics remain external-spec dependent.",
+            SupportState::Complete,
+            "Type 4 NEXRAD payloads decode run-length and empty-element forms, block-reference scale, and geographic bounds for individual GBR blocks.",
         ),
         support_entry(
             "5.1.1",
             "Definition",
-            SupportState::Partial,
-            "The documented NEXRAD block payload form is implemented, but the external Global Block geo definition is only partially available from the supplied docs.",
+            SupportState::Complete,
+            "The Global Block Representation carried by the Garmin examples and ETSO amendments is implemented, including scale-aware block geometry.",
         ),
         support_entry(
             "5.1.2",
@@ -469,8 +469,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "5.1.3",
             "APDU Payload Format",
-            SupportState::Partial,
-            "The documented APDU header constraints, block reference, and run-length payloads are implemented; exact geo semantics remain external-spec dependent.",
+            SupportState::Complete,
+            "The documented APDU header constraints, block reference indicator, run-length blocks, and empty-element bitmap form are implemented.",
         ),
         support_entry(
             "5.1.4",
@@ -660,8 +660,7 @@ mod tests {
     #[test]
     fn missing_sections_match_expected_protocol_gap_set() {
         let expected = vec![
-            "4", "4.3", "4.3.1", "4.3.2", "4.4", "4.4.1", "4.4.2", "4.5", "5", "5.1", "5.1.1",
-            "5.1.3", "5.2", "5.2.1", "5.2.2",
+            "4", "4.3", "4.3.1", "4.3.2", "4.4", "4.4.1", "4.5", "5", "5.2", "5.2.1", "5.2.2",
         ];
 
         let actual = missing_sections()

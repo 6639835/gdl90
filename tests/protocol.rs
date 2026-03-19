@@ -702,6 +702,36 @@ fn nexrad_block_reference_exposes_public_example_bits() {
 }
 
 #[test]
+fn nexrad_block_reference_exposes_public_example_geo_bounds() {
+    let reference = NexradBlockReference::from_raw([0x84, 0xA5, 0x70]);
+    let bounds = reference.geo_bounds().unwrap();
+    assert!((bounds.west_longitude_deg - (-123.2)).abs() < 0.0001);
+    assert!((bounds.east_longitude_deg - (-122.4)).abs() < 0.0001);
+    assert!((bounds.north_latitude_deg - 45.1333333333).abs() < 0.0001);
+    assert!((bounds.south_latitude_deg - 45.0666666667).abs() < 0.0001);
+}
+
+#[test]
+fn nexrad_empty_bitmap_expands_referenced_blocks() {
+    let block = NexradBlock::from_payload(&[0x04, 0xA5, 0x70, 0x00]).unwrap();
+    match &block {
+        NexradBlock::EmptyBitmap {
+            block_reference_indicator,
+            bitmap_bytes,
+        } => {
+            assert_eq!(*block_reference_indicator, [0x04, 0xA5, 0x70]);
+            assert_eq!(bitmap_bytes, &vec![0x00]);
+        }
+        other => panic!("expected empty bitmap, got {other:?}"),
+    }
+    let refs = block.empty_block_references().unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].block_number, 0x04_A5_70);
+    assert!(!refs[0].is_run_length_encoded);
+    assert_eq!(block.to_payload(), vec![0x04, 0xA5, 0x70, 0x00]);
+}
+
+#[test]
 fn apdu_supports_easa_time_variants_and_segmentation_block() {
     let header_with_seconds = ApduHeader {
         application_flag: false,
@@ -1449,17 +1479,17 @@ fn sample_nexrad_application_data_fields_decode_to_nineteen_products() {
 
     assert_eq!(products.len(), 19);
     let mut nexrad_count = 0usize;
-    let mut empty_or_unparsed_count = 0usize;
+    let mut empty_count = 0usize;
+    let mut unparsed_count = 0usize;
     let mut rle_count = 0usize;
     for product in products {
         match product {
             FisbProduct::Nexrad(nexrad) => {
                 nexrad_count += 1;
                 match nexrad.block {
-                    NexradBlock::Empty { .. } | NexradBlock::Unparsed { .. } => {
-                        empty_or_unparsed_count += 1
-                    }
+                    NexradBlock::Empty { .. } | NexradBlock::EmptyBitmap { .. } => empty_count += 1,
                     NexradBlock::RunLengthEncoded { .. } => rle_count += 1,
+                    NexradBlock::Unparsed { .. } => unparsed_count += 1,
                 }
             }
             other => panic!("expected nexrad product, got {other:?}"),
@@ -1467,6 +1497,7 @@ fn sample_nexrad_application_data_fields_decode_to_nineteen_products() {
     }
 
     assert_eq!(nexrad_count, 19);
-    assert_eq!(empty_or_unparsed_count, 10);
+    assert_eq!(empty_count, 10);
     assert_eq!(rle_count, 9);
+    assert_eq!(unparsed_count, 0);
 }

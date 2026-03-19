@@ -33,5 +33,6 @@ pub use crate::message::{
 };
 pub use crate::uplink::{
     ApduMonthDay, ApduSegmentation, CurrentReportList, CurrentReportListItem, FisbProductId,
-    FrameType, NexradBlockReference, NexradIntensity, ServiceStatusSignal, UatUplinkHeader,
+    FrameType, NexradBlockReference, NexradGeoBounds, NexradIntensity, ServiceStatusSignal,
+    UatUplinkHeader,
 };
