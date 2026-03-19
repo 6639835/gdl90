@@ -11,15 +11,16 @@ use gdl90::message::{
     AddressType, BasicUatPayload, FrameMessageDecoder, HEIGHT_ABOVE_TERRAIN_MESSAGE_ID, Heartbeat,
     HeartbeatStatus, HeightAboveTerrain, LongUatPayload, Message,
     OWNSHIP_GEOMETRIC_ALTITUDE_MESSAGE_ID, OwnshipGeometricAltitude, PassThroughReport,
-    TargetAlertStatus, TargetMisc, TargetReport, TrackType, UatAdsbPayloadHeader, UplinkData,
-    VerticalFigureOfMerit,
+    TargetAlertStatus, TargetMisc, TargetReport, TrackType, UatAddressQualifier,
+    UatAdsbPayloadHeader, UatAirGroundState, UatAltitudeType, UatEmergencyStatus, UatHeadingType,
+    UplinkData, VerticalFigureOfMerit,
 };
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
     ApduHeader, ApduMonthDay, ApduSegmentation, CurrentReportList, CurrentReportListItem,
-    FisbProduct, FisbProductId, FrameType, GenericTextApdu, GenericTextField,
-    GenericTextRecord, GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock,
-    NexradBlockReference, NexradIntensity, ServiceStatusSignal, TextQualifier, UatUplinkPayload,
+    FisbProduct, FisbProductId, FrameType, GenericTextApdu, GenericTextField, GenericTextRecord,
+    GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, NexradBlockReference,
+    NexradIntensity, ServiceStatusSignal, TextQualifier, UatUplinkHeader, UatUplinkPayload,
 };
 
 fn example_target_report() -> TargetReport {
@@ -1140,6 +1141,103 @@ fn long_pass_through_report_exposes_inner_payload_sections() {
     assert_eq!(decoded.time_of_reception, None);
     assert_eq!(decoded.long_payload(), payload);
     assert_eq!(decoded.long_payload().encode().unwrap(), report.payload);
+}
+
+#[test]
+fn decoded_uat_pass_through_fields_match_known_long_report_sample() {
+    let bytes =
+        decode_hex("0b2b48fe3aef1f88621a0856110a31c01105c4e6c4e6c40a9a820300000000000000").unwrap();
+    let payload = LongUatPayload::decode(&bytes).unwrap();
+
+    assert_eq!(
+        payload.header.decoded_address_qualifier(),
+        UatAddressQualifier::TisbTrackFile
+    );
+
+    let state = payload.decoded_state_vector();
+    assert_eq!(state.nic, 6);
+    assert_eq!(state.air_ground_state, UatAirGroundState::Subsonic);
+    assert_eq!(
+        state.altitude.unwrap().altitude_type,
+        UatAltitudeType::Barometric
+    );
+    assert_eq!(state.altitude.unwrap().altitude_feet, 2_300);
+    assert_eq!(state.north_south_velocity_kt, Some(-65));
+    assert_eq!(state.east_west_velocity_kt, Some(-98));
+    assert_eq!(state.speed_kt, Some(117));
+    assert_eq!(state.track.unwrap().kind, TrackType::TrueTrack);
+    assert_eq!(state.track.unwrap().degrees, 236);
+    assert_eq!(
+        state.vertical_rate,
+        Some(gdl90::UatVerticalRate {
+            feet_per_minute: 0,
+            source: UatAltitudeType::Barometric,
+        })
+    );
+    assert!(!state.utc_coupled);
+    assert_eq!(state.tisb_site_id, 1);
+    let position = state.position.unwrap();
+    assert!((position.latitude_deg - 41.4380).abs() < 0.001);
+    assert!((position.longitude_deg - (-84.1056)).abs() < 0.001);
+
+    let basic = BasicUatPayload {
+        header: payload.header,
+        state_vector: payload.state_vector,
+        reserved: 0,
+    };
+    assert_eq!(basic.decoded_state_vector(), state);
+
+    let mode_status = payload.decoded_mode_status();
+    assert_eq!(mode_status.emitter_category, 0);
+    assert_eq!(mode_status.callsign, None);
+    assert_eq!(mode_status.callsign_type, None);
+    assert_eq!(mode_status.emergency_status, UatEmergencyStatus::None);
+    assert_eq!(mode_status.uat_version, 2);
+    assert_eq!(mode_status.sil, 2);
+    assert_eq!(mode_status.transmit_mso, 38);
+    assert_eq!(mode_status.nac_p, 8);
+    assert_eq!(mode_status.nac_v, 1);
+    assert!(!mode_status.nic_baro);
+    assert!(!mode_status.has_cdti);
+    assert!(!mode_status.has_acas);
+    assert!(!mode_status.acas_ra_active);
+    assert!(!mode_status.ident_active);
+    assert!(!mode_status.atc_services);
+    assert_eq!(mode_status.heading_type, UatHeadingType::True);
+
+    let aux = payload.decoded_auxiliary_state_vector();
+    assert_eq!(aux.secondary_altitude, None);
+}
+
+#[test]
+fn uat_uplink_header_round_trips_structured_fields() {
+    let header = UatUplinkHeader {
+        position_valid: true,
+        latitude_deg: 37.618805,
+        longitude_deg: -122.375416,
+        utc_coupled: true,
+        application_data_valid: true,
+        slot_id: 17,
+        tisb_site_id: 9,
+    };
+
+    let encoded = header.encode().unwrap();
+    let decoded = UatUplinkHeader::decode(&encoded).unwrap();
+    assert!(decoded.position_valid);
+    assert!(decoded.utc_coupled);
+    assert!(decoded.application_data_valid);
+    assert_eq!(decoded.slot_id, 17);
+    assert_eq!(decoded.tisb_site_id, 9);
+    assert!((decoded.latitude_deg - header.latitude_deg).abs() < 0.0001);
+    assert!((decoded.longitude_deg - header.longitude_deg).abs() < 0.0001);
+
+    let payload =
+        UatUplinkPayload::from_decoded_header_and_information_frames(header, &[]).unwrap();
+    let payload_header = payload.decoded_header().unwrap();
+    assert!(payload_header.position_valid);
+    assert!(payload_header.application_data_valid);
+    assert_eq!(payload_header.slot_id, 17);
+    assert_eq!(payload_header.tisb_site_id, 9);
 }
 
 #[test]

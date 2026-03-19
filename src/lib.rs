@@ -23,12 +23,15 @@ mod util;
 
 pub use crate::error::{Gdl90Error, Result};
 pub use crate::message::{
-    AddressType, BasicUatPayload, FrameMessageDecoder, Heartbeat, HeartbeatStatus,
-    HeightAboveTerrain, Initialization, LongUatPayload, Message, OwnshipGeometricAltitude,
-    PassThroughReport, TargetAlertStatus, TargetMisc, TargetReport, TrackType,
-    UatAdsbPayloadHeader, VerticalFigureOfMerit,
+    AddressType, BasicUatPayload, DecodedUatAuxiliaryStateVector, DecodedUatModeStatus,
+    DecodedUatStateVector, FrameMessageDecoder, Heartbeat, HeartbeatStatus, HeightAboveTerrain,
+    Initialization, LongUatPayload, Message, OwnshipGeometricAltitude, PassThroughReport,
+    TargetAlertStatus, TargetMisc, TargetReport, TrackType, UatAddressQualifier,
+    UatAdsbPayloadHeader, UatAirGroundState, UatAltitude, UatAltitudeType, UatCallsignType,
+    UatDimensions, UatEmergencyStatus, UatHeadingType, UatPosition, UatTrack, UatVerticalRate,
+    VerticalFigureOfMerit,
 };
 pub use crate::uplink::{
     ApduMonthDay, ApduSegmentation, CurrentReportList, CurrentReportListItem, FisbProductId,
-    FrameType, NexradBlockReference, NexradIntensity, ServiceStatusSignal,
+    FrameType, NexradBlockReference, NexradIntensity, ServiceStatusSignal, UatUplinkHeader,
 };

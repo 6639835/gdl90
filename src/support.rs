@@ -235,8 +235,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "3",
             "Message Definitions",
-            SupportState::Partial,
-            "All documented outer message formats are implemented; the remaining gap is the externally-defined inner bit layout of pass-through ADS-B payloads.",
+            SupportState::Complete,
+            "All documented outer message formats, including pass-through ADS-B inner field decoding, are implemented.",
         ),
         support_entry(
             "3.1",
@@ -331,8 +331,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "3.6",
             "Pass-Through Reports",
-            SupportState::Partial,
-            "Basic and Long payloads are structurally decoded into header, state vector, mode status, and auxiliary state vector segments; full bit-level state/mode field decoding still needs DO-282.",
+            SupportState::Complete,
+            "Basic and Long payloads decode into typed UAT header, state-vector, mode-status, and auxiliary-state-vector fields while preserving the original raw bytes.",
         ),
         support_entry(
             "3.7",
@@ -355,14 +355,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4.1",
             "Uplink Message",
-            SupportState::Partial,
-            "The 432-byte payload container is implemented; only the 8-byte UAT-specific header bit layout remains blocked by the external DO-282 reference.",
+            SupportState::Complete,
+            "The 432-byte payload container, 8-byte UAT-specific header, and 424-byte application-data region are all decoded into structured fields.",
         ),
         support_entry(
             "4.1.1",
             "UAT-Specific Header",
-            SupportState::BlockedByExternalSpec,
-            "The 8-byte header is preserved raw; bit-field layout is deferred by the Garmin document to DO-282.",
+            SupportState::Complete,
+            "Header latitude/longitude, position-valid flag, UTC-coupled flag, application-data-valid flag, slot id, and TIS-B site id are decoded and re-encoded.",
         ),
         support_entry(
             "4.1.2",
@@ -660,8 +660,8 @@ mod tests {
     #[test]
     fn missing_sections_match_expected_protocol_gap_set() {
         let expected = vec![
-            "3", "3.6", "4", "4.1", "4.1.1", "4.3", "4.3.1", "4.3.2", "4.4", "4.4.1", "4.4.2",
-            "4.5", "5", "5.1", "5.1.1", "5.1.3", "5.2", "5.2.1", "5.2.2",
+            "4", "4.3", "4.3.1", "4.3.2", "4.4", "4.4.1", "4.4.2", "4.5", "5", "5.1", "5.1.1",
+            "5.1.3", "5.2", "5.2.1", "5.2.2",
         ];
 
         let actual = missing_sections()

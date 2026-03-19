@@ -6,8 +6,8 @@ use crate::foreflight::{
 use crate::frame::{FrameDecoder, encode_frame};
 use crate::uplink::UatUplinkPayload;
 use crate::util::{
-    decode_callsign, degrees_to_lat_lon, lat_lon_to_degrees, read_be_i16, read_be_i24, read_le_u24,
-    write_le_u24,
+    decode_callsign, decode_uat_latitude, decode_uat_longitude, degrees_to_lat_lon,
+    lat_lon_to_degrees, read_be_i16, read_be_i24, read_le_u24, write_le_u24,
 };
 
 pub const HEARTBEAT_MESSAGE_ID: u8 = 0;
@@ -744,6 +744,171 @@ impl UatAdsbPayloadHeader {
     pub fn is_long_type1(self) -> bool {
         self.payload_type_code == 1
     }
+
+    pub fn decoded_address_qualifier(self) -> UatAddressQualifier {
+        UatAddressQualifier::from_raw(self.address_qualifier)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UatAddressQualifier {
+    AdsbIcao,
+    NationalUse,
+    TisbIcao,
+    TisbTrackFile,
+    Vehicle,
+    FixedBeacon,
+    Reserved(u8),
+}
+
+impl UatAddressQualifier {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::AdsbIcao,
+            1 => Self::NationalUse,
+            2 => Self::TisbIcao,
+            3 => Self::TisbTrackFile,
+            4 => Self::Vehicle,
+            5 => Self::FixedBeacon,
+            other => Self::Reserved(other),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UatAltitudeType {
+    Barometric,
+    Geometric,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UatAirGroundState {
+    Subsonic,
+    Supersonic,
+    Ground,
+    Reserved,
+}
+
+impl UatAirGroundState {
+    fn from_raw(value: u8) -> Self {
+        match value & 0x03 {
+            0 => Self::Subsonic,
+            1 => Self::Supersonic,
+            2 => Self::Ground,
+            _ => Self::Reserved,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UatPosition {
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UatAltitude {
+    pub altitude_feet: i32,
+    pub altitude_type: UatAltitudeType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UatTrack {
+    pub kind: TrackType,
+    pub degrees: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UatVerticalRate {
+    pub feet_per_minute: i16,
+    pub source: UatAltitudeType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UatDimensions {
+    pub length_meters: f64,
+    pub width_meters: f64,
+    pub position_offset_applied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedUatStateVector {
+    pub nic: u8,
+    pub position: Option<UatPosition>,
+    pub altitude: Option<UatAltitude>,
+    pub air_ground_state: UatAirGroundState,
+    pub north_south_velocity_kt: Option<i16>,
+    pub east_west_velocity_kt: Option<i16>,
+    pub track: Option<UatTrack>,
+    pub speed_kt: Option<u16>,
+    pub vertical_rate: Option<UatVerticalRate>,
+    pub dimensions: Option<UatDimensions>,
+    pub utc_coupled: bool,
+    pub tisb_site_id: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UatCallsignType {
+    Callsign,
+    Squawk,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UatEmergencyStatus {
+    None,
+    General,
+    Medical,
+    MinimumFuel,
+    NoCommunications,
+    UnlawfulInterference,
+    DownedAircraft,
+    Reserved,
+}
+
+impl UatEmergencyStatus {
+    fn from_raw(value: u8) -> Self {
+        match value & 0x07 {
+            0 => Self::None,
+            1 => Self::General,
+            2 => Self::Medical,
+            3 => Self::MinimumFuel,
+            4 => Self::NoCommunications,
+            5 => Self::UnlawfulInterference,
+            6 => Self::DownedAircraft,
+            _ => Self::Reserved,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UatHeadingType {
+    Magnetic,
+    True,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedUatModeStatus {
+    pub emitter_category: u8,
+    pub callsign: Option<String>,
+    pub callsign_type: Option<UatCallsignType>,
+    pub emergency_status: UatEmergencyStatus,
+    pub uat_version: u8,
+    pub sil: u8,
+    pub transmit_mso: u8,
+    pub nac_p: u8,
+    pub nac_v: u8,
+    pub nic_baro: bool,
+    pub has_cdti: bool,
+    pub has_acas: bool,
+    pub acas_ra_active: bool,
+    pub ident_active: bool,
+    pub atc_services: bool,
+    pub heading_type: UatHeadingType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodedUatAuxiliaryStateVector {
+    pub secondary_altitude: Option<UatAltitude>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -782,6 +947,10 @@ impl BasicUatPayload {
         out[4..17].copy_from_slice(&self.state_vector);
         out[17] = self.reserved;
         Ok(out)
+    }
+
+    pub fn decoded_state_vector(&self) -> DecodedUatStateVector {
+        decode_uat_state_vector(self.header, &self.state_vector)
     }
 }
 
@@ -828,6 +997,247 @@ impl LongUatPayload {
         out[17..29].copy_from_slice(&self.mode_status);
         out[29..34].copy_from_slice(&self.auxiliary_state_vector);
         Ok(out)
+    }
+
+    pub fn decoded_state_vector(&self) -> DecodedUatStateVector {
+        decode_uat_state_vector(self.header, &self.state_vector)
+    }
+
+    pub fn decoded_mode_status(&self) -> DecodedUatModeStatus {
+        decode_uat_mode_status(&self.mode_status)
+    }
+
+    pub fn decoded_auxiliary_state_vector(&self) -> DecodedUatAuxiliaryStateVector {
+        decode_uat_auxiliary_state_vector(&self.state_vector, &self.auxiliary_state_vector)
+    }
+}
+
+const UAT_DIMENSIONS_WIDTHS_METERS: [f64; 16] = [
+    11.5, 23.0, 28.5, 34.0, 33.0, 38.0, 39.5, 45.0, 45.0, 52.0, 59.5, 67.0, 72.5, 80.0, 80.0, 90.0,
+];
+const UAT_BASE40_ALPHABET: [char; 40] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
+    'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', ' ', '.',
+    '.', '.',
+];
+
+fn decode_uat_state_vector(
+    header: UatAdsbPayloadHeader,
+    state_vector: &[u8; 13],
+) -> DecodedUatStateVector {
+    let nic = state_vector[7] & 0x0F;
+    let raw_lat = ((state_vector[0] as u32) << 15)
+        | ((state_vector[1] as u32) << 7)
+        | ((state_vector[2] as u32) >> 1);
+    let raw_lon = (((state_vector[2] as u32) & 0x01) << 23)
+        | ((state_vector[3] as u32) << 15)
+        | ((state_vector[4] as u32) << 7)
+        | ((state_vector[5] as u32) >> 1);
+    let raw_altitude = ((state_vector[6] as u16) << 4) | (((state_vector[7] & 0xF0) as u16) >> 4);
+
+    let position = if nic != 0 || raw_lat != 0 || raw_lon != 0 {
+        Some(UatPosition {
+            latitude_deg: decode_uat_latitude(raw_lat),
+            longitude_deg: decode_uat_longitude(raw_lon),
+        })
+    } else {
+        None
+    };
+    let altitude = if raw_altitude != 0 {
+        Some(UatAltitude {
+            altitude_feet: (raw_altitude as i32 - 1) * 25 - 1_000,
+            altitude_type: if (state_vector[5] & 0x01) != 0 {
+                UatAltitudeType::Geometric
+            } else {
+                UatAltitudeType::Barometric
+            },
+        })
+    } else {
+        None
+    };
+
+    let air_ground_state = UatAirGroundState::from_raw(state_vector[8] >> 6);
+    let mut north_south_velocity_kt = None;
+    let mut east_west_velocity_kt = None;
+    let mut track = None;
+    let mut speed_kt = None;
+    let mut vertical_rate = None;
+    let mut dimensions = None;
+
+    match air_ground_state {
+        UatAirGroundState::Subsonic | UatAirGroundState::Supersonic => {
+            let raw_ns = (((state_vector[8] & 0x1F) as i16) << 6) | ((state_vector[9] as i16) >> 2);
+            if (raw_ns & 0x03FF) != 0 {
+                let mut velocity = (raw_ns & 0x03FF) - 1;
+                if (raw_ns & 0x0400) != 0 {
+                    velocity = -velocity;
+                }
+                if air_ground_state == UatAirGroundState::Supersonic {
+                    velocity *= 4;
+                }
+                north_south_velocity_kt = Some(velocity);
+            }
+
+            let raw_ew = (((state_vector[9] & 0x03) as i16) << 9)
+                | ((state_vector[10] as i16) << 1)
+                | ((state_vector[11] as i16) >> 7);
+            if (raw_ew & 0x03FF) != 0 {
+                let mut velocity = (raw_ew & 0x03FF) - 1;
+                if (raw_ew & 0x0400) != 0 {
+                    velocity = -velocity;
+                }
+                if air_ground_state == UatAirGroundState::Supersonic {
+                    velocity *= 4;
+                }
+                east_west_velocity_kt = Some(velocity);
+            }
+
+            if let (Some(ns), Some(ew)) = (north_south_velocity_kt, east_west_velocity_kt) {
+                if ns != 0 || ew != 0 {
+                    let degrees =
+                        ((360.0 + 90.0 - (ns as f64).atan2(ew as f64).to_degrees()) % 360.0) as u16;
+                    track = Some(UatTrack {
+                        kind: TrackType::TrueTrack,
+                        degrees,
+                    });
+                }
+                speed_kt = Some((((ns as f64).powi(2) + (ew as f64).powi(2)).sqrt()) as u16);
+            }
+
+            let raw_vertical_rate = (((state_vector[11] & 0x7F) as u16) << 4)
+                | (((state_vector[12] & 0xF0) as u16) >> 4);
+            if (raw_vertical_rate & 0x01FF) != 0 {
+                let magnitude = ((raw_vertical_rate & 0x01FF) as i16 - 1) * 64;
+                vertical_rate = Some(UatVerticalRate {
+                    feet_per_minute: if (raw_vertical_rate & 0x0200) != 0 {
+                        -magnitude
+                    } else {
+                        magnitude
+                    },
+                    source: if (raw_vertical_rate & 0x0400) != 0 {
+                        UatAltitudeType::Barometric
+                    } else {
+                        UatAltitudeType::Geometric
+                    },
+                });
+            }
+        }
+        UatAirGroundState::Ground => {
+            let raw_speed =
+                (((state_vector[8] & 0x1F) as u16) << 6) | (((state_vector[9] & 0xFC) as u16) >> 2);
+            if raw_speed != 0 {
+                speed_kt = Some((raw_speed & 0x03FF) - 1);
+            }
+
+            let raw_track = (((state_vector[9] & 0x03) as u16) << 9)
+                | ((state_vector[10] as u16) << 1)
+                | ((state_vector[11] as u16) >> 7);
+            let kind = TrackType::from_raw(((raw_track & 0x0600) >> 9) as u8);
+            if kind != TrackType::NotValid {
+                track = Some(UatTrack {
+                    kind,
+                    degrees: ((raw_track & 0x01FF) * 360) / 512,
+                });
+            }
+
+            dimensions = Some(UatDimensions {
+                length_meters: 15.0 + 10.0 * (((state_vector[11] & 0x38) >> 3) as f64),
+                width_meters: UAT_DIMENSIONS_WIDTHS_METERS
+                    [((state_vector[11] & 0x78) >> 3) as usize],
+                position_offset_applied: (state_vector[11] & 0x04) != 0,
+            });
+        }
+        UatAirGroundState::Reserved => {}
+    }
+
+    let (utc_coupled, tisb_site_id) = match header.decoded_address_qualifier() {
+        UatAddressQualifier::TisbIcao | UatAddressQualifier::TisbTrackFile => {
+            (false, state_vector[12] & 0x0F)
+        }
+        _ => ((state_vector[12] & 0x08) != 0, 0),
+    };
+
+    DecodedUatStateVector {
+        nic,
+        position,
+        altitude,
+        air_ground_state,
+        north_south_velocity_kt,
+        east_west_velocity_kt,
+        track,
+        speed_kt,
+        vertical_rate,
+        dimensions,
+        utc_coupled,
+        tisb_site_id,
+    }
+}
+
+fn decode_uat_mode_status(mode_status: &[u8; 12]) -> DecodedUatModeStatus {
+    let first = ((mode_status[0] as u16) << 8) | mode_status[1] as u16;
+    let second = ((mode_status[2] as u16) << 8) | mode_status[3] as u16;
+    let third = ((mode_status[4] as u16) << 8) | mode_status[5] as u16;
+
+    let mut callsign = String::with_capacity(8);
+    callsign.push(UAT_BASE40_ALPHABET[((first / 40) % 40) as usize]);
+    callsign.push(UAT_BASE40_ALPHABET[(first % 40) as usize]);
+    callsign.push(UAT_BASE40_ALPHABET[((second / 1600) % 40) as usize]);
+    callsign.push(UAT_BASE40_ALPHABET[((second / 40) % 40) as usize]);
+    callsign.push(UAT_BASE40_ALPHABET[(second % 40) as usize]);
+    callsign.push(UAT_BASE40_ALPHABET[((third / 1600) % 40) as usize]);
+    callsign.push(UAT_BASE40_ALPHABET[((third / 40) % 40) as usize]);
+    callsign.push(UAT_BASE40_ALPHABET[(third % 40) as usize]);
+    let callsign = callsign.trim_end().to_string();
+    let callsign_present = !callsign.is_empty();
+
+    DecodedUatModeStatus {
+        emitter_category: ((first / 1600) % 40) as u8,
+        callsign: callsign_present.then_some(callsign),
+        callsign_type: callsign_present.then_some(if (mode_status[9] & 0x02) != 0 {
+            UatCallsignType::Callsign
+        } else {
+            UatCallsignType::Squawk
+        }),
+        emergency_status: UatEmergencyStatus::from_raw(mode_status[6] >> 5),
+        uat_version: (mode_status[6] >> 2) & 0x07,
+        sil: mode_status[6] & 0x03,
+        transmit_mso: (mode_status[7] >> 2) & 0x3F,
+        nac_p: (mode_status[8] >> 4) & 0x0F,
+        nac_v: (mode_status[8] >> 1) & 0x07,
+        nic_baro: (mode_status[8] & 0x01) != 0,
+        has_cdti: (mode_status[9] & 0x80) != 0,
+        has_acas: (mode_status[9] & 0x40) != 0,
+        acas_ra_active: (mode_status[9] & 0x20) != 0,
+        ident_active: (mode_status[9] & 0x10) != 0,
+        atc_services: (mode_status[9] & 0x08) != 0,
+        heading_type: if (mode_status[9] & 0x04) != 0 {
+            UatHeadingType::Magnetic
+        } else {
+            UatHeadingType::True
+        },
+    }
+}
+
+fn decode_uat_auxiliary_state_vector(
+    state_vector: &[u8; 13],
+    auxiliary_state_vector: &[u8; 5],
+) -> DecodedUatAuxiliaryStateVector {
+    let raw_altitude = ((auxiliary_state_vector[0] as u16) << 4)
+        | (((auxiliary_state_vector[1] & 0xF0) as u16) >> 4);
+
+    DecodedUatAuxiliaryStateVector {
+        secondary_altitude: if raw_altitude == 0 {
+            None
+        } else {
+            Some(UatAltitude {
+                altitude_feet: (raw_altitude as i32 - 1) * 25 - 1_000,
+                altitude_type: if (state_vector[5] & 0x01) != 0 {
+                    UatAltitudeType::Barometric
+                } else {
+                    UatAltitudeType::Geometric
+                },
+            })
+        },
     }
 }
 

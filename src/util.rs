@@ -183,3 +183,51 @@ pub(crate) fn degrees_to_lat_lon(
     let raw = (degrees * 8_388_608.0 / 180.0).round() as i32;
     write_be_i24(raw)
 }
+
+pub(crate) fn decode_uat_latitude(raw: u32) -> f64 {
+    let mut latitude = raw as f64 * 360.0 / 16_777_216.0;
+    if latitude > 90.0 {
+        latitude -= 180.0;
+    }
+    latitude
+}
+
+pub(crate) fn decode_uat_longitude(raw: u32) -> f64 {
+    let mut longitude = raw as f64 * 360.0 / 16_777_216.0;
+    if longitude > 180.0 {
+        longitude -= 360.0;
+    }
+    longitude
+}
+
+pub(crate) fn encode_uat_latitude(latitude: f64) -> Result<u32> {
+    if !(-90.0..=90.0).contains(&latitude) {
+        return Err(Gdl90Error::InvalidField {
+            field: "UAT latitude",
+            details: format!("{latitude} is outside [-90, 90]"),
+        });
+    }
+
+    let normalized = if latitude < 0.0 {
+        latitude + 180.0
+    } else {
+        latitude
+    };
+    Ok(((normalized * 16_777_216.0 / 360.0).round() as u32) & 0x00FF_FFFF)
+}
+
+pub(crate) fn encode_uat_longitude(longitude: f64) -> Result<u32> {
+    if !(-180.0..=180.0).contains(&longitude) {
+        return Err(Gdl90Error::InvalidField {
+            field: "UAT longitude",
+            details: format!("{longitude} is outside [-180, 180]"),
+        });
+    }
+
+    let normalized = if longitude < 0.0 {
+        longitude + 360.0
+    } else {
+        longitude
+    };
+    Ok(((normalized * 16_777_216.0 / 360.0).round() as u32) & 0x00FF_FFFF)
+}

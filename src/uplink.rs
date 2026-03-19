@@ -1,4 +1,7 @@
 use crate::error::{Gdl90Error, Result};
+use crate::util::{
+    decode_uat_latitude, decode_uat_longitude, encode_uat_latitude, encode_uat_longitude,
+};
 pub const UAT_UPLINK_PAYLOAD_LEN: usize = 432;
 pub const UAT_HEADER_LEN: usize = 8;
 pub const APPLICATION_DATA_LEN: usize = 424;
@@ -42,21 +45,150 @@ impl FisbProductId {
 
     pub fn display_name(self) -> &'static str {
         match self {
+            Self::Unknown(0) | Self::Unknown(20) => "METAR/SPECI",
+            Self::Unknown(1) | Self::Unknown(21) => "TAF",
+            Self::Unknown(2) | Self::Unknown(22) => "SIGMET",
+            Self::Unknown(3) | Self::Unknown(23) => "Convective SIGMET",
+            Self::Unknown(4) | Self::Unknown(24) => "AIRMET",
+            Self::Unknown(5) | Self::Unknown(25) => "PIREP",
+            Self::Unknown(6) | Self::Unknown(26) => "AWW",
+            Self::Unknown(7) | Self::Unknown(27) => "Winds/Temps Aloft",
             Self::GenericText => "Generic Text",
             Self::Nexrad => "NEXRAD",
-            Self::Unknown(8) => "NOTAM/TFR",
+            Self::Unknown(8) => "NOTAM/TFR and Service Status",
+            Self::Unknown(9) => "D-ATIS",
+            Self::Unknown(10) => "TWIP",
             Self::Unknown(11) => "AIRMET",
             Self::Unknown(12) => "SIGMET",
             Self::Unknown(13) => "SUA Status",
             Self::Unknown(14) => "G-AIRMET",
             Self::Unknown(15) => "Center Weather Advisory",
+            Self::Unknown(51) => "National NEXRAD Type 0",
+            Self::Unknown(52) => "National NEXRAD Type 1",
+            Self::Unknown(53) => "National NEXRAD Type 2",
+            Self::Unknown(54) => "National NEXRAD Type 3",
+            Self::Unknown(55) => "Regional NEXRAD Type 0",
+            Self::Unknown(56) => "Regional NEXRAD Type 1",
+            Self::Unknown(57) => "Regional NEXRAD Type 2",
+            Self::Unknown(58) => "Regional NEXRAD Type 3",
+            Self::Unknown(59) => "Individual NEXRAD Type 0",
+            Self::Unknown(60) => "Individual NEXRAD Type 1",
+            Self::Unknown(61) => "Individual NEXRAD Type 2",
+            Self::Unknown(62) => "Individual NEXRAD Type 3",
             Self::Unknown(64) => "NEXRAD CONUS",
+            Self::Unknown(81) | Self::Unknown(82) => "Radar Echo Tops",
+            Self::Unknown(83) => "Storm Tops and Velocity",
             Self::Unknown(70) | Self::Unknown(71) => "Icing Forecast Potential",
             Self::Unknown(84) => "Cloud Tops",
             Self::Unknown(90) | Self::Unknown(91) => "Turbulence",
-            Self::Unknown(103) => "Lightning",
+            Self::Unknown(101) | Self::Unknown(102) | Self::Unknown(103) => "Lightning",
+            Self::Unknown(151) => "Point Phenomena",
+            Self::Unknown(201) => "Surface Conditions/Winter Precipitation",
+            Self::Unknown(202) => "Surface Weather Systems",
+            Self::Unknown(254) => "AIRMET/SIGMET Bitmap",
+            Self::Unknown(351) => "System Time",
+            Self::Unknown(352) => "Operational Status",
+            Self::Unknown(353) => "Ground Station Status",
+            Self::Unknown(401) => "Generic Raster Type 1",
+            Self::Unknown(402) | Self::Unknown(411) => "Generic Text Type 1",
+            Self::Unknown(403) => "Generic Vector Type 1",
+            Self::Unknown(404) | Self::Unknown(412) => "Generic Symbolic Type 1",
+            Self::Unknown(405) => "Generic Text Type 2",
+            Self::Unknown(600) => "FISDL Proprietary",
+            Self::Unknown(2000) => "FAA Developmental Product 1",
+            Self::Unknown(2001) => "FAA Developmental Product 2",
+            Self::Unknown(2002) => "FAA Developmental Product 3",
+            Self::Unknown(2003) => "FAA Developmental Product 4",
+            Self::Unknown(2004) => "WSI Proprietary",
+            Self::Unknown(2005) => "WSI Developmental",
             Self::Unknown(_) => "Unknown",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UatUplinkHeader {
+    pub position_valid: bool,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub utc_coupled: bool,
+    pub application_data_valid: bool,
+    pub slot_id: u8,
+    pub tisb_site_id: u8,
+}
+
+impl UatUplinkHeader {
+    pub const LEN: usize = UAT_HEADER_LEN;
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != Self::LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "UAT uplink header",
+                expected: "8 bytes",
+                actual: bytes.len(),
+            });
+        }
+
+        let raw_lat =
+            ((bytes[0] as u32) << 15) | ((bytes[1] as u32) << 7) | ((bytes[2] as u32) >> 1);
+        let raw_lon = (((bytes[2] as u32) & 0x01) << 23)
+            | ((bytes[3] as u32) << 15)
+            | ((bytes[4] as u32) << 7)
+            | ((bytes[5] as u32) >> 1);
+
+        if (bytes[6] & 0x40) != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "UAT uplink header reserved bit",
+                details: "byte 6 bit 6 must be zero".to_string(),
+            });
+        }
+        if (bytes[7] & 0x0F) != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "UAT uplink header reserved bits",
+                details: "byte 7 bits 3..0 must be zero".to_string(),
+            });
+        }
+
+        Ok(Self {
+            position_valid: (bytes[5] & 0x01) != 0,
+            latitude_deg: decode_uat_latitude(raw_lat),
+            longitude_deg: decode_uat_longitude(raw_lon),
+            utc_coupled: (bytes[6] & 0x80) != 0,
+            application_data_valid: (bytes[6] & 0x20) != 0,
+            slot_id: bytes[6] & 0x1F,
+            tisb_site_id: bytes[7] >> 4,
+        })
+    }
+
+    pub fn encode(self) -> Result<[u8; Self::LEN]> {
+        if self.slot_id > 0x1F {
+            return Err(Gdl90Error::InvalidField {
+                field: "UAT uplink slot id",
+                details: "must fit in 5 bits".to_string(),
+            });
+        }
+        if self.tisb_site_id > 0x0F {
+            return Err(Gdl90Error::InvalidField {
+                field: "UAT uplink TIS-B site id",
+                details: "must fit in 4 bits".to_string(),
+            });
+        }
+
+        let raw_lat = encode_uat_latitude(self.latitude_deg)?;
+        let raw_lon = encode_uat_longitude(self.longitude_deg)?;
+
+        Ok([
+            ((raw_lat >> 15) & 0xFF) as u8,
+            ((raw_lat >> 7) & 0xFF) as u8,
+            (((raw_lat & 0x7F) as u8) << 1) | (((raw_lon >> 23) & 0x01) as u8),
+            ((raw_lon >> 15) & 0xFF) as u8,
+            ((raw_lon >> 7) & 0xFF) as u8,
+            (((raw_lon & 0x7F) as u8) << 1) | self.position_valid as u8,
+            ((self.utc_coupled as u8) << 7)
+                | ((self.application_data_valid as u8) << 5)
+                | (self.slot_id & 0x1F),
+            (self.tisb_site_id & 0x0F) << 4,
+        ])
     }
 }
 
@@ -93,6 +225,10 @@ impl UatUplinkPayload {
         out[..UAT_HEADER_LEN].copy_from_slice(&self.header);
         out[UAT_HEADER_LEN..].copy_from_slice(&self.application_data);
         out
+    }
+
+    pub fn decoded_header(&self) -> Result<UatUplinkHeader> {
+        UatUplinkHeader::decode(&self.header)
     }
 
     pub fn information_frames(&self) -> Result<Vec<InformationFrame>> {
@@ -182,6 +318,13 @@ impl UatUplinkPayload {
             header,
             application_data,
         })
+    }
+
+    pub fn from_decoded_header_and_information_frames(
+        header: UatUplinkHeader,
+        frames: &[InformationFrame],
+    ) -> Result<Self> {
+        Self::from_information_frames(header.encode()?, frames)
     }
 
     pub fn fisb_products(&self) -> Result<Vec<FisbProduct>> {
