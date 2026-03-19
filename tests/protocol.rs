@@ -643,6 +643,34 @@ fn traffic_velocity_encoding_saturates_to_documented_limits() {
 }
 
 #[test]
+fn ownship_geometric_altitude_accepts_both_supplied_vfom_sentinels_on_decode() {
+    let garmin = Message::decode(&[0x0B, 0x00, 0x00, 0x7F, 0xFE]).unwrap();
+    let foreflight_text = Message::decode(&[0x0B, 0x00, 0x00, 0x7E, 0xEE]).unwrap();
+
+    let Message::OwnshipGeometricAltitude(garmin) = garmin else {
+        panic!("expected ownship geometric altitude");
+    };
+    let Message::OwnshipGeometricAltitude(foreflight_text) = foreflight_text else {
+        panic!("expected ownship geometric altitude");
+    };
+
+    assert_eq!(
+        garmin.vertical_figure_of_merit,
+        VerticalFigureOfMerit::GreaterThan32766
+    );
+    assert_eq!(
+        foreflight_text.vertical_figure_of_merit,
+        VerticalFigureOfMerit::GreaterThan32766
+    );
+    assert_eq!(
+        Message::OwnshipGeometricAltitude(foreflight_text)
+            .encode()
+            .unwrap(),
+        [0x0B, 0x00, 0x00, 0x7F, 0xFE]
+    );
+}
+
+#[test]
 fn basic_pass_through_report_exposes_inner_payload_sections() {
     let payload = BasicUatPayload {
         header: UatAdsbPayloadHeader {

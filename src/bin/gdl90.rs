@@ -16,8 +16,8 @@ use gdl90::message::{
 use gdl90::report::{build_session_report, render_json_report, render_text_report};
 use gdl90::session::{RecordedDatagram, append_datagram, decode_hex, read_datagram_file};
 use gdl90::support::{
-    SupportState, control_panel_profiles, missing_sections, rs422_bus_profile, rs422_connections,
-    section_support_matrix,
+    SupportState, control_panel_connections, control_panel_profiles, missing_sections,
+    rs422_bus_profile, rs422_connections, section_support_matrix,
 };
 use gdl90::transport::{
     FOREFLIGHT_DISCOVERY_PORT, FOREFLIGHT_GDL90_PORT, ForeFlightUdpSender, UdpGdl90Receiver,
@@ -132,6 +132,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     profile.stop_bits,
                     profile.parity,
                     profile.flow_control
+                );
+            }
+            for connection in control_panel_connections() {
+                println!(
+                    "  {} | {} | {}",
+                    connection.signal_name, connection.direction, connection.connector_pin
                 );
             }
         }

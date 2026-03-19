@@ -787,7 +787,10 @@ impl OwnshipGeometricAltitude {
             vertical_warning: (raw_metrics & 0x8000) != 0,
             vertical_figure_of_merit: match raw_metrics & 0x7FFF {
                 0x7FFF => VerticalFigureOfMerit::NotAvailable,
-                0x7FFE => VerticalFigureOfMerit::GreaterThan32766,
+                // The Garmin ICD uses 0x7FFE for the saturated VFOM sentinel, but the
+                // supplied ForeFlight extension text lists 0x7EEE. Accept both on decode
+                // so the library remains interoperable with devices following either text.
+                0x7EEE | 0x7FFE => VerticalFigureOfMerit::GreaterThan32766,
                 meters => VerticalFigureOfMerit::Meters(meters),
             },
         })
