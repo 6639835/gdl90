@@ -20,6 +20,9 @@ pub const TRAFFIC_REPORT_MESSAGE_ID: u8 = 20;
 pub const BASIC_REPORT_MESSAGE_ID: u8 = 30;
 pub const LONG_REPORT_MESSAGE_ID: u8 = 31;
 
+const SECONDS_PER_DAY: u32 = 86_400;
+const MAX_TIME_OF_RECEPTION_TICKS: u32 = 12_499_999;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeartbeatStatus {
     pub gps_position_valid: bool,
@@ -81,10 +84,10 @@ impl Heartbeat {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
-        if self.timestamp_seconds_since_midnight > 0x1_FFFF {
+        if self.timestamp_seconds_since_midnight >= SECONDS_PER_DAY {
             return Err(Gdl90Error::InvalidField {
                 field: "heartbeat timestamp",
-                details: "must fit in 17 bits".to_string(),
+                details: "must be seconds since UTC midnight in the range 0..=86399".to_string(),
             });
         }
         if self.uplink_count > 0x1F {
@@ -190,6 +193,16 @@ impl UplinkData {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
+        if let Some(tor) = self.time_of_reception {
+            if tor > MAX_TIME_OF_RECEPTION_TICKS {
+                return Err(Gdl90Error::InvalidField {
+                    field: "time of reception",
+                    details: "must be in the range 0..=12499999 or omitted when invalid"
+                        .to_string(),
+                });
+            }
+        }
+
         let mut out = Vec::with_capacity(Self::LEN);
         out.push(UPLINK_DATA_MESSAGE_ID);
         out.extend_from_slice(&write_le_u24(self.time_of_reception.unwrap_or(0xFF_FFFF))?);
@@ -220,6 +233,16 @@ impl TargetAlertStatus {
             Self::TrafficAlert => 1,
             Self::Reserved(value) => value & 0x0F,
         }
+    }
+
+    fn validate_for_encoding(self) -> Result<()> {
+        if matches!(self, Self::Reserved(_)) {
+            return Err(Gdl90Error::InvalidField {
+                field: "traffic alert status",
+                details: "reserved values 2..=15 are not valid for transmitted reports".to_string(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -257,6 +280,16 @@ impl AddressType {
             Self::GroundStationBeacon => 5,
             Self::Reserved(value) => value & 0x0F,
         }
+    }
+
+    fn validate_for_encoding(self) -> Result<()> {
+        if matches!(self, Self::Reserved(_)) {
+            return Err(Gdl90Error::InvalidField {
+                field: "address type",
+                details: "reserved values 6..=15 are not valid for transmitted reports".to_string(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -397,22 +430,31 @@ impl TargetReport {
     }
 
     pub fn encode(&self, message_id: u8) -> Result<Vec<u8>> {
+        self.alert_status.validate_for_encoding()?;
+        self.address_type.validate_for_encoding()?;
+
         if self.participant_address > 0xFF_FFFF {
             return Err(Gdl90Error::InvalidField {
                 field: "participant address",
                 details: "must fit in 24 bits".to_string(),
             });
         }
-        if self.nic > 0x0F || self.nacp > 0x0F {
+        if self.nic > 11 || self.nacp > 11 {
             return Err(Gdl90Error::InvalidField {
                 field: "NIC/NACp",
-                details: "must fit in 4 bits".to_string(),
+                details: "documented NIC/NACp values are 0..=11".to_string(),
             });
         }
-        if self.emergency_priority_code > 0x0F || self.spare > 0x0F {
+        if self.emergency_priority_code > 6 {
             return Err(Gdl90Error::InvalidField {
-                field: "emergency/spare nibble",
-                details: "must fit in 4 bits".to_string(),
+                field: "emergency priority code",
+                details: "reserved values 7..=15 are not valid for transmitted reports".to_string(),
+            });
+        }
+        if self.spare != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "traffic report spare",
+                details: "reserved spare nibble must be zero".to_string(),
             });
         }
         if self.emitter_category > 39 {
@@ -420,6 +462,31 @@ impl TargetReport {
                 field: "emitter category",
                 details: "must be in the range 0..=39".to_string(),
             });
+        }
+        if self.emitter_category >= 22 {
+            return Err(Gdl90Error::InvalidField {
+                field: "emitter category",
+                details: "reserved categories 22..=39 are not valid for transmitted reports"
+                    .to_string(),
+            });
+        }
+        match self.misc.track_type {
+            TrackType::NotValid if self.track_heading.is_some() => {
+                return Err(Gdl90Error::InvalidField {
+                    field: "track/heading",
+                    details: "track heading must be omitted when the track type is NotValid"
+                        .to_string(),
+                });
+            }
+            TrackType::NotValid => {}
+            _ if self.track_heading.is_none() => {
+                return Err(Gdl90Error::InvalidField {
+                    field: "track/heading",
+                    details: "track heading is required when the track type indicates valid data"
+                        .to_string(),
+                });
+            }
+            _ => {}
         }
 
         let mut out = Vec::with_capacity(Self::LEN);
@@ -503,7 +570,7 @@ impl TargetReport {
             });
         }
         for (index, byte) in encoded.bytes().enumerate() {
-            if !matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b' ' | b'-') {
+            if !matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b' ') {
                 return Err(Gdl90Error::InvalidField {
                     field: "call sign",
                     details: format!("byte {byte:#04x} is not permitted"),
@@ -690,6 +757,16 @@ impl<const N: usize> PassThroughReport<N> {
     }
 
     pub fn encode(&self, message_id: u8) -> Result<Vec<u8>> {
+        if let Some(tor) = self.time_of_reception {
+            if tor > MAX_TIME_OF_RECEPTION_TICKS {
+                return Err(Gdl90Error::InvalidField {
+                    field: "time of reception",
+                    details: "must be in the range 0..=12499999 or omitted when invalid"
+                        .to_string(),
+                });
+            }
+        }
+
         let mut out = Vec::with_capacity(N + 4);
         out.push(message_id);
         out.extend_from_slice(&crate::util::write_le_u24(

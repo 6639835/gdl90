@@ -11,14 +11,15 @@ use gdl90::message::{
     AddressType, BasicUatPayload, FrameMessageDecoder, HEIGHT_ABOVE_TERRAIN_MESSAGE_ID, Heartbeat,
     HeartbeatStatus, HeightAboveTerrain, LongUatPayload, Message,
     OWNSHIP_GEOMETRIC_ALTITUDE_MESSAGE_ID, OwnshipGeometricAltitude, PassThroughReport,
-    TargetAlertStatus, TargetMisc, TargetReport, TrackType, UatAdsbPayloadHeader,
+    TargetAlertStatus, TargetMisc, TargetReport, TrackType, UatAdsbPayloadHeader, UplinkData,
     VerticalFigureOfMerit,
 };
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
-    ApduHeader, ApduMonthDay, ApduSegmentation, FisbProduct, FisbProductId, GenericTextApdu,
-    GenericTextField, GenericTextRecord, GenericTextRecordKind, InformationFrame, NexradApdu,
-    NexradBlock, NexradBlockReference, NexradIntensity, TextQualifier, UatUplinkPayload,
+    ApduHeader, ApduMonthDay, ApduSegmentation, FisbProduct, FisbProductId, FrameType,
+    GenericTextApdu, GenericTextField, GenericTextRecord, GenericTextRecordKind, InformationFrame,
+    NexradApdu, NexradBlock, NexradBlockReference, NexradIntensity, TextQualifier,
+    UatUplinkPayload,
 };
 
 fn example_target_report() -> TargetReport {
@@ -179,6 +180,63 @@ fn traffic_report_field_examples_match_public_icd_tables() {
 }
 
 #[test]
+fn traffic_report_encode_rejects_reserved_and_inconsistent_documented_values() {
+    let mut report = example_target_report();
+    report.alert_status = TargetAlertStatus::Reserved(2);
+    assert!(
+        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "traffic alert status")
+    );
+
+    let mut report = example_target_report();
+    report.address_type = AddressType::Reserved(6);
+    assert!(
+        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "address type")
+    );
+
+    let mut report = example_target_report();
+    report.nic = 12;
+    assert!(
+        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "NIC/NACp")
+    );
+
+    let mut report = example_target_report();
+    report.emergency_priority_code = 7;
+    assert!(
+        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "emergency priority code")
+    );
+
+    let mut report = example_target_report();
+    report.spare = 1;
+    assert!(
+        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "traffic report spare")
+    );
+
+    let mut report = example_target_report();
+    report.emitter_category = 22;
+    assert!(
+        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "emitter category")
+    );
+
+    let mut report = example_target_report();
+    report.misc.track_type = TrackType::NotValid;
+    assert!(
+        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "track/heading")
+    );
+
+    let mut report = example_target_report();
+    report.track_heading = None;
+    assert!(
+        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "track/heading")
+    );
+
+    let mut report = example_target_report();
+    report.call_sign = "N12-45".to_string();
+    assert!(
+        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "call sign")
+    );
+}
+
+#[test]
 fn framed_stream_decoder_handles_back_to_back_messages() {
     let heartbeat = Message::Heartbeat(Heartbeat {
         status: HeartbeatStatus {
@@ -250,6 +308,26 @@ fn foreflight_messages_round_trip() {
     assert_eq!(
         Message::decode(&ahrs_message.encode().unwrap()).unwrap(),
         ahrs_message
+    );
+}
+
+#[test]
+fn foreflight_ahrs_heading_rejects_negative_values_on_encode() {
+    let error = Message::ForeFlightAhrs(ForeFlightAhrsMessage {
+        roll_tenths_degrees: None,
+        pitch_tenths_degrees: None,
+        heading: Some(Heading {
+            heading_type: HeadingType::True,
+            tenths_degrees: -1,
+        }),
+        indicated_airspeed_knots: None,
+        true_airspeed_knots: None,
+    })
+    .encode()
+    .unwrap_err();
+
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "AHRS heading")
     );
 }
 
@@ -699,6 +777,55 @@ fn ownship_report_round_trip() {
 }
 
 #[test]
+fn heartbeat_and_uplink_time_fields_reject_values_outside_documented_ranges() {
+    let heartbeat = Message::Heartbeat(Heartbeat {
+        status: HeartbeatStatus {
+            gps_position_valid: true,
+            maintenance_required: false,
+            ident: false,
+            address_type_talkback: false,
+            gps_battery_low: false,
+            ratcs: false,
+            uat_initialized: true,
+            csa_requested: false,
+            csa_not_available: false,
+            utc_ok: true,
+        },
+        timestamp_seconds_since_midnight: 86_400,
+        uplink_count: 0,
+        basic_and_long_count: 0,
+    })
+    .encode()
+    .unwrap_err();
+    assert!(
+        matches!(heartbeat, gdl90::Gdl90Error::InvalidField { field, .. } if field == "heartbeat timestamp")
+    );
+
+    let uplink = Message::UplinkData(UplinkData {
+        time_of_reception: Some(12_500_000),
+        payload: UatUplinkPayload {
+            header: [0u8; 8],
+            application_data: [0u8; 424],
+        },
+    })
+    .encode()
+    .unwrap_err();
+    assert!(
+        matches!(uplink, gdl90::Gdl90Error::InvalidField { field, .. } if field == "time of reception")
+    );
+
+    let basic = Message::BasicReport(PassThroughReport::<18> {
+        time_of_reception: Some(12_500_000),
+        payload: [0u8; 18],
+    })
+    .encode()
+    .unwrap_err();
+    assert!(
+        matches!(basic, gdl90::Gdl90Error::InvalidField { field, .. } if field == "time of reception")
+    );
+}
+
+#[test]
 fn traffic_velocity_encoding_saturates_to_documented_limits() {
     let report = TargetReport {
         alert_status: TargetAlertStatus::NoAlert,
@@ -885,6 +1012,35 @@ fn long_pass_through_report_exposes_inner_payload_sections() {
     assert_eq!(decoded.time_of_reception, None);
     assert_eq!(decoded.long_payload(), payload);
     assert_eq!(decoded.long_payload().encode().unwrap(), report.payload);
+}
+
+#[test]
+fn information_frame_encoding_rejects_reserved_bits_and_reserved_frame_types() {
+    let reserved_bits = UatUplinkPayload::from_information_frames(
+        [0u8; 8],
+        &[InformationFrame {
+            reserved: 1,
+            frame_type: FrameType::FisBApdu,
+            data: vec![],
+        }],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(reserved_bits, gdl90::Gdl90Error::InvalidField { field, .. } if field == "I-Frame reserved bits")
+    );
+
+    let reserved_type = UatUplinkPayload::from_information_frames(
+        [0u8; 8],
+        &[InformationFrame {
+            reserved: 0,
+            frame_type: FrameType::Reserved(1),
+            data: vec![],
+        }],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(reserved_type, gdl90::Gdl90Error::InvalidField { field, .. } if field == "I-Frame frame type")
+    );
 }
 
 #[test]

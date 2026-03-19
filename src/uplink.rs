@@ -128,6 +128,8 @@ impl UatUplinkPayload {
         let mut offset = 0usize;
 
         for frame in frames {
+            frame.validate_for_encoding()?;
+
             let length = frame.data.len();
             if length > 422 {
                 return Err(Gdl90Error::InvalidField {
@@ -203,6 +205,23 @@ pub struct InformationFrame {
 }
 
 impl InformationFrame {
+    fn validate_for_encoding(&self) -> Result<()> {
+        if self.reserved != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "I-Frame reserved bits",
+                details: "reserved bits 6..4 must be zero".to_string(),
+            });
+        }
+        if matches!(self.frame_type, FrameType::Reserved(_)) {
+            return Err(Gdl90Error::InvalidField {
+                field: "I-Frame frame type",
+                details: "reserved frame types 0x1..=0xE are not valid for transmitted frames"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn apdu(&self) -> Result<Apdu> {
         if self.frame_type != FrameType::FisBApdu {
             return Err(Gdl90Error::InvalidField {

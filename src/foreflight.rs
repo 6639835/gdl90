@@ -312,10 +312,10 @@ impl ForeFlightAhrsMessage {
                 HeadingType::Magnetic
             };
             let value = (raw_heading & 0x7FFF) as i16;
-            if !(-3600..=3600).contains(&value) {
+            if !(0..=3600).contains(&value) {
                 return Err(Gdl90Error::InvalidField {
                     field: "AHRS heading",
-                    details: format!("{value} is outside [-3600, 3600]"),
+                    details: format!("{value} is outside [0, 3600]"),
                 });
             }
             Some(Heading {
@@ -357,10 +357,10 @@ impl ForeFlightAhrsMessage {
             "AHRS pitch",
         )?);
         let heading = if let Some(heading) = self.heading {
-            if !(-3600..=3600).contains(&heading.tenths_degrees) {
+            if !(0..=3600).contains(&heading.tenths_degrees) {
                 return Err(Gdl90Error::InvalidField {
                     field: "AHRS heading",
-                    details: format!("{} is outside [-3600, 3600]", heading.tenths_degrees),
+                    details: format!("{} is outside [0, 3600]", heading.tenths_degrees),
                 });
             }
             let type_bit = match heading.heading_type {
