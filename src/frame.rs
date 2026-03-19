@@ -143,3 +143,23 @@ fn crc16_table(index: u8) -> u16 {
     }
     crc
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_frame, encode_frame};
+
+    #[test]
+    fn byte_stuffing_examples_match_public_icd_examples() {
+        let stuffed_flag = encode_frame(&[0x02, 0x7E]);
+        assert_eq!(&stuffed_flag[..4], &[0x7E, 0x02, 0x7D, 0x5E]);
+        assert_eq!(decode_frame(&stuffed_flag).unwrap(), vec![0x02, 0x7E]);
+
+        let stuffed_escape = encode_frame(&[0x03, 0x7D]);
+        assert_eq!(&stuffed_escape[..4], &[0x7E, 0x03, 0x7D, 0x5D]);
+        assert_eq!(decode_frame(&stuffed_escape).unwrap(), vec![0x03, 0x7D]);
+
+        let stuffed_crc = encode_frame(&[0x7E, 0x7D]);
+        assert!(stuffed_crc.ends_with(&[0x7D, 0x5D, 0x7D, 0x5E, 0x7E]));
+        assert_eq!(decode_frame(&stuffed_crc).unwrap(), vec![0x7E, 0x7D]);
+    }
+}

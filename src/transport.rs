@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_foreflight_discovery_json() {
+    fn parses_foreflight_discovery_json_example() {
         let json = r#"{
             "App":"ForeFlight",
             "GDL90":{
@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn derives_unicast_target_from_discovery_source() {
+    fn derives_unicast_target_from_documented_discovery_source() {
         let announcement = ForeFlightDiscoveryAnnouncement {
             app: "ForeFlight".to_string(),
             gdl90_port: 4000,

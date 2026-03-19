@@ -8,9 +8,11 @@ use gdl90::foreflight::{
 };
 use gdl90::frame::decode_frame;
 use gdl90::message::{
-    AddressType, BasicUatPayload, FrameMessageDecoder, Heartbeat, HeartbeatStatus, LongUatPayload,
-    Message, OwnshipGeometricAltitude, PassThroughReport, TargetAlertStatus, TargetMisc,
-    TargetReport, TrackType, UatAdsbPayloadHeader, VerticalFigureOfMerit,
+    AddressType, BasicUatPayload, FrameMessageDecoder, HEIGHT_ABOVE_TERRAIN_MESSAGE_ID, Heartbeat,
+    HeartbeatStatus, HeightAboveTerrain, LongUatPayload, Message,
+    OWNSHIP_GEOMETRIC_ALTITUDE_MESSAGE_ID, OwnshipGeometricAltitude, PassThroughReport,
+    TargetAlertStatus, TargetMisc, TargetReport, TrackType, UatAdsbPayloadHeader,
+    VerticalFigureOfMerit,
 };
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
@@ -18,6 +20,43 @@ use gdl90::uplink::{
     GenericTextField, GenericTextRecord, GenericTextRecordKind, InformationFrame, NexradApdu,
     NexradBlock, NexradBlockReference, NexradIntensity, TextQualifier, UatUplinkPayload,
 };
+
+fn example_target_report() -> TargetReport {
+    TargetReport {
+        alert_status: TargetAlertStatus::NoAlert,
+        address_type: AddressType::AdsbIcao,
+        participant_address: 0xAB_CD_EF,
+        latitude_degrees: 0.0,
+        longitude_degrees: 0.0,
+        pressure_altitude_feet: Some(0),
+        misc: TargetMisc {
+            airborne: true,
+            extrapolated: false,
+            track_type: TrackType::TrueTrack,
+        },
+        nic: 10,
+        nacp: 9,
+        horizontal_velocity_knots: Some(120),
+        vertical_velocity_fpm: Some(0),
+        track_heading: Some(0),
+        emitter_category: 1,
+        call_sign: "N12345".to_string(),
+        emergency_priority_code: 0,
+        spare: 0,
+    }
+}
+
+fn encode_example_target_report(report: TargetReport) -> Vec<u8> {
+    Message::TrafficReport(report).encode().unwrap()
+}
+
+fn encoded_altitude_raw(encoded: &[u8]) -> u16 {
+    ((encoded[11] as u16) << 4) | ((encoded[12] as u16) >> 4)
+}
+
+fn encoded_vertical_velocity_raw(encoded: &[u8]) -> u16 {
+    (((encoded[15] & 0x0F) as u16) << 8) | encoded[16] as u16
+}
 
 #[test]
 fn heartbeat_spec_frame_decodes_and_reencodes() {
@@ -73,6 +112,70 @@ fn traffic_report_spec_example_round_trips() {
 
     let reencoded = Message::TrafficReport(report).encode().unwrap();
     assert_eq!(reencoded, bytes);
+}
+
+#[test]
+fn traffic_report_field_examples_match_public_icd_tables() {
+    let latitude_examples = [
+        (0.0, [0x00, 0x00, 0x00]),
+        (180.0 / 8_388_608.0, [0x00, 0x00, 0x01]),
+        (45.0, [0x20, 0x00, 0x00]),
+        (-45.0, [0xE0, 0x00, 0x00]),
+        (90.0, [0x40, 0x00, 0x00]),
+    ];
+    for (degrees, expected_raw) in latitude_examples {
+        let mut report = example_target_report();
+        report.latitude_degrees = degrees;
+        let encoded = encode_example_target_report(report);
+        assert_eq!(&encoded[5..8], &expected_raw);
+    }
+
+    let longitude_examples = [
+        (0.0, [0x00, 0x00, 0x00]),
+        (180.0 / 8_388_608.0, [0x00, 0x00, 0x01]),
+        (-(180.0 / 8_388_608.0), [0xFF, 0xFF, 0xFF]),
+        (45.0, [0x20, 0x00, 0x00]),
+        (-45.0, [0xE0, 0x00, 0x00]),
+        (-180.0, [0x80, 0x00, 0x00]),
+        (179.999_978_542_327_88, [0x7F, 0xFF, 0xFF]),
+    ];
+    for (degrees, expected_raw) in longitude_examples {
+        let mut report = example_target_report();
+        report.longitude_degrees = degrees;
+        let encoded = encode_example_target_report(report);
+        assert_eq!(&encoded[8..11], &expected_raw);
+    }
+
+    let altitude_examples = [
+        (Some(-1_000), 0x000),
+        (Some(0), 0x028),
+        (Some(1_000), 0x050),
+        (Some(101_350), 0xFFE),
+        (None, 0xFFF),
+    ];
+    for (pressure_altitude_feet, expected_raw) in altitude_examples {
+        let mut report = example_target_report();
+        report.pressure_altitude_feet = pressure_altitude_feet;
+        let encoded = encode_example_target_report(report);
+        assert_eq!(encoded_altitude_raw(&encoded), expected_raw);
+    }
+
+    let vertical_velocity_examples = [
+        (Some(0), 0x000),
+        (Some(64), 0x001),
+        (Some(-64), 0xFFF),
+        (Some(32_576), 0x1FD),
+        (Some(32_640), 0x1FE),
+        (Some(-32_576), 0xE03),
+        (Some(-32_640), 0xE02),
+        (None, 0x800),
+    ];
+    for (vertical_velocity_fpm, expected_raw) in vertical_velocity_examples {
+        let mut report = example_target_report();
+        report.vertical_velocity_fpm = vertical_velocity_fpm;
+        let encoded = encode_example_target_report(report);
+        assert_eq!(encoded_vertical_velocity_raw(&encoded), expected_raw);
+    }
 }
 
 #[test]
@@ -668,6 +771,71 @@ fn ownship_geometric_altitude_accepts_both_supplied_vfom_sentinels_on_decode() {
             .unwrap(),
         [0x0B, 0x00, 0x00, 0x7F, 0xFE]
     );
+}
+
+#[test]
+fn height_above_terrain_and_geometric_altitude_examples_match_public_icd_text() {
+    let hat = Message::HeightAboveTerrain(HeightAboveTerrain { feet: Some(256) })
+        .encode()
+        .unwrap();
+    assert_eq!(hat, vec![HEIGHT_ABOVE_TERRAIN_MESSAGE_ID, 0x01, 0x00]);
+    assert_eq!(
+        Message::decode(&hat).unwrap(),
+        Message::HeightAboveTerrain(HeightAboveTerrain { feet: Some(256) })
+    );
+
+    let hat_invalid = Message::HeightAboveTerrain(HeightAboveTerrain { feet: None })
+        .encode()
+        .unwrap();
+    assert_eq!(
+        hat_invalid,
+        vec![HEIGHT_ABOVE_TERRAIN_MESSAGE_ID, 0x80, 0x00]
+    );
+    assert_eq!(
+        Message::decode(&hat_invalid).unwrap(),
+        Message::HeightAboveTerrain(HeightAboveTerrain { feet: None })
+    );
+
+    let altitude_examples = [
+        (-1_000, [0xFF, 0x38]),
+        (0, [0x00, 0x00]),
+        (1_000, [0x00, 0xC8]),
+    ];
+    for (altitude_feet, expected_raw) in altitude_examples {
+        let encoded = Message::OwnshipGeometricAltitude(OwnshipGeometricAltitude {
+            altitude_feet,
+            vertical_warning: false,
+            vertical_figure_of_merit: VerticalFigureOfMerit::NotAvailable,
+        })
+        .encode()
+        .unwrap();
+        assert_eq!(&encoded[1..3], &expected_raw);
+    }
+
+    let metric_examples = [
+        ([0xFF, 0xFF], true, VerticalFigureOfMerit::NotAvailable),
+        ([0x7F, 0xFE], false, VerticalFigureOfMerit::GreaterThan32766),
+        ([0x00, 0x0A], false, VerticalFigureOfMerit::Meters(10)),
+        ([0x80, 0x32], true, VerticalFigureOfMerit::Meters(50)),
+    ];
+    for (metrics, vertical_warning, vfom) in metric_examples {
+        let decoded = Message::decode(&[
+            OWNSHIP_GEOMETRIC_ALTITUDE_MESSAGE_ID,
+            0x00,
+            0x00,
+            metrics[0],
+            metrics[1],
+        ])
+        .unwrap();
+        assert_eq!(
+            decoded,
+            Message::OwnshipGeometricAltitude(OwnshipGeometricAltitude {
+                altitude_feet: 0,
+                vertical_warning,
+                vertical_figure_of_merit: vfom,
+            })
+        );
+    }
 }
 
 #[test]
