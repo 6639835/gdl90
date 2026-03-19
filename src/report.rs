@@ -23,13 +23,25 @@ pub struct DatagramReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct FrameReport {
-    pub index: usize,
-    pub clear_hex: Option<String>,
-    pub message_id: Option<u8>,
-    pub kind: Option<String>,
-    pub summary: Option<String>,
-    pub error: Option<String>,
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FrameReport {
+    Decoded {
+        index: usize,
+        clear_hex: String,
+        message_id: u8,
+        kind: String,
+        summary: String,
+    },
+    MessageError {
+        index: usize,
+        clear_hex: String,
+        message_id: Option<u8>,
+        error: String,
+    },
+    FrameError {
+        index: usize,
+        error: String,
+    },
 }
 
 pub fn build_session_report(datagrams: &[RecordedDatagram]) -> SessionReport {
@@ -45,30 +57,23 @@ pub fn build_session_report(datagrams: &[RecordedDatagram]) -> SessionReport {
         for (frame_index, frame_result) in frame_results.into_iter().enumerate() {
             match frame_result {
                 Ok(clear) => match Message::decode(&clear) {
-                    Ok(message) => frames.push(FrameReport {
+                    Ok(message) => frames.push(FrameReport::Decoded {
                         index: frame_index + 1,
-                        clear_hex: Some(encode_hex(&clear)),
-                        message_id: Some(message.message_id()),
-                        kind: Some(message.kind_name()),
-                        summary: Some(message.summary()),
-                        error: None,
+                        clear_hex: encode_hex(&clear),
+                        message_id: message.message_id(),
+                        kind: message.kind_name(),
+                        summary: message.summary(),
                     }),
-                    Err(error) => frames.push(FrameReport {
+                    Err(error) => frames.push(FrameReport::MessageError {
                         index: frame_index + 1,
-                        clear_hex: Some(encode_hex(&clear)),
+                        clear_hex: encode_hex(&clear),
                         message_id: clear.first().copied(),
-                        kind: None,
-                        summary: None,
-                        error: Some(error.to_string()),
+                        error: error.to_string(),
                     }),
                 },
-                Err(error) => frames.push(FrameReport {
+                Err(error) => frames.push(FrameReport::FrameError {
                     index: frame_index + 1,
-                    clear_hex: None,
-                    message_id: None,
-                    kind: None,
-                    summary: None,
-                    error: Some(error.to_string()),
+                    error: error.to_string(),
                 }),
             }
         }
@@ -151,21 +156,22 @@ pub fn render_text_report(report: &SessionReport) -> String {
             ),
         );
         for frame in &datagram.frames {
-            if let Some(error) = &frame.error {
-                push_line(
-                    &mut out,
-                    format!("    frame {} error: {error}", frame.index),
-                );
-            } else {
-                push_line(
-                    &mut out,
-                    format!(
-                        "    frame {} kind={} summary={}",
-                        frame.index,
-                        frame.kind.as_deref().unwrap_or("unknown"),
-                        frame.summary.as_deref().unwrap_or("")
-                    ),
-                );
+            match frame {
+                FrameReport::Decoded {
+                    index,
+                    kind,
+                    summary,
+                    ..
+                } => {
+                    push_line(
+                        &mut out,
+                        format!("    frame {index} kind={kind} summary={summary}"),
+                    );
+                }
+                FrameReport::MessageError { index, error, .. }
+                | FrameReport::FrameError { index, error } => {
+                    push_line(&mut out, format!("    frame {index} error: {error}"));
+                }
             }
         }
         if datagram.frames.is_empty() {

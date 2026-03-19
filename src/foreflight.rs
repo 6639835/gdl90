@@ -102,8 +102,8 @@ pub enum InternetPolicy {
 }
 
 impl InternetPolicy {
-    fn from_bits(bits: u8) -> Self {
-        match bits {
+    fn from_raw(raw: u8) -> Self {
+        match raw {
             0 => Self::Unrestricted,
             1 => Self::Expensive,
             2 => Self::Disallowed,
@@ -111,7 +111,7 @@ impl InternetPolicy {
         }
     }
 
-    fn bits(self) -> u8 {
+    fn raw(self) -> u8 {
         match self {
             Self::Unrestricted => 0,
             Self::Expensive => 1,
@@ -146,7 +146,7 @@ impl ForeFlightCapabilities {
             } else {
                 GeometricAltitudeDatum::MeanSeaLevel
             },
-            internet_policy: InternetPolicy::from_bits(((raw >> 1) & 0x03) as u8),
+            internet_policy: InternetPolicy::from_raw(((raw >> 1) & 0x03) as u8),
             reserved_bits: raw & !0x07,
         }
     }
@@ -156,7 +156,7 @@ impl ForeFlightCapabilities {
             GeometricAltitudeDatum::Wgs84Ellipsoid => 0u32,
             GeometricAltitudeDatum::MeanSeaLevel => 1u32,
         };
-        datum | ((self.internet_policy.bits() as u32) << 1) | (self.reserved_bits & !0x07)
+        datum | ((self.internet_policy.raw() as u32) << 1) | (self.reserved_bits & !0x07)
     }
 
     pub fn validate(self) -> Result<()> {

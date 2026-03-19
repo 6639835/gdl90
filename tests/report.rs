@@ -1,5 +1,5 @@
 use gdl90::message::{Heartbeat, HeartbeatStatus, Message};
-use gdl90::report::{build_session_report, render_json_report, render_text_report};
+use gdl90::report::{FrameReport, build_session_report, render_json_report, render_text_report};
 use gdl90::session::RecordedDatagram;
 
 #[test]
@@ -30,17 +30,13 @@ fn session_report_contains_frame_details() {
     assert_eq!(report.analysis.datagram_count, 1);
     assert_eq!(report.datagrams.len(), 1);
     assert_eq!(report.datagrams[0].frames.len(), 1);
-    assert_eq!(
-        report.datagrams[0].frames[0].kind.as_deref(),
-        Some("Heartbeat")
-    );
-    assert!(
-        report.datagrams[0].frames[0]
-            .summary
-            .as_deref()
-            .unwrap()
-            .contains("gps_valid=true")
-    );
+    match &report.datagrams[0].frames[0] {
+        FrameReport::Decoded { kind, summary, .. } => {
+            assert_eq!(kind, "Heartbeat");
+            assert!(summary.contains("gps_valid=true"));
+        }
+        other => panic!("expected decoded frame, got {other:?}"),
+    }
 }
 
 #[test]

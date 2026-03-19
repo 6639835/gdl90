@@ -78,5 +78,5 @@ fn file_round_trip_and_append_work() {
 #[test]
 fn parse_rejects_invalid_lines() {
     let error = parse_datagram_line("@abc 7E00").unwrap_err();
-    assert!(error.contains("invalid delay"));
+    assert!(matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "datagram delay"));
 }

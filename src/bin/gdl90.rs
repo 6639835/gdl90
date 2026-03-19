@@ -36,14 +36,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match args.next().as_deref() {
         Some("decode-frame") => {
             let hex = require_arg(args.next(), "hex frame")?;
-            let bytes = decode_hex(&hex).map_err(boxed_string_error)?;
+            let bytes = decode_hex(&hex)?;
             let clear = gdl90::frame::decode_frame(&bytes)?;
             let message = Message::decode(&clear)?;
             println!("{message:#?}");
         }
         Some("decode-stream") => {
             let hex = require_arg(args.next(), "hex stream")?;
-            let bytes = decode_hex(&hex).map_err(boxed_string_error)?;
+            let bytes = decode_hex(&hex)?;
             let mut decoder = gdl90::FrameMessageDecoder::new();
             for result in decoder.push(&bytes) {
                 println!("{:#?}", result?);
@@ -317,10 +317,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn require_arg(value: Option<String>, name: &'static str) -> Result<String, String> {
     value.ok_or_else(|| format!("missing required argument: {name}"))
-}
-
-fn boxed_string_error(error: String) -> Box<dyn std::error::Error> {
-    error.into()
 }
 
 fn render_support_state(state: SupportState) -> &'static str {

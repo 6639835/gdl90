@@ -9,8 +9,8 @@ pub enum ControlMode {
 }
 
 impl ControlMode {
-    fn from_byte(byte: u8) -> Result<Self> {
-        match byte {
+    fn from_raw(raw: u8) -> Result<Self> {
+        match raw {
             b'O' => Ok(Self::Standby),
             b'A' => Ok(Self::ModeA),
             b'C' => Ok(Self::ModeC),
@@ -18,7 +18,7 @@ impl ControlMode {
         }
     }
 
-    fn byte(self) -> u8 {
+    fn raw(self) -> u8 {
         match self {
             Self::Standby => b'O',
             Self::ModeA => b'A',
@@ -34,15 +34,15 @@ pub enum IdentStatus {
 }
 
 impl IdentStatus {
-    fn from_byte(byte: u8) -> Result<Self> {
-        match byte {
+    fn from_raw(raw: u8) -> Result<Self> {
+        match raw {
             b'I' => Ok(Self::Active),
             b'-' => Ok(Self::Inactive),
             _ => Err(Gdl90Error::ControlFormat("unknown ident status")),
         }
     }
 
-    fn byte(self) -> u8 {
+    fn raw(self) -> u8 {
         match self {
             Self::Active => b'I',
             Self::Inactive => b'-',
@@ -62,8 +62,8 @@ pub enum EmergencyCode {
 }
 
 impl EmergencyCode {
-    fn from_byte(byte: u8) -> Result<Self> {
-        match byte {
+    fn from_raw(raw: u8) -> Result<Self> {
+        match raw {
             b'0' => Ok(Self::None),
             b'1' => Ok(Self::General),
             b'2' => Ok(Self::Medical),
@@ -75,7 +75,7 @@ impl EmergencyCode {
         }
     }
 
-    fn byte(self) -> u8 {
+    fn raw(self) -> u8 {
         match self {
             Self::None => b'0',
             Self::General => b'1',
@@ -148,7 +148,7 @@ fn decode_call_sign(line: &[u8]) -> Result<CallSignMessage> {
         ));
     }
     verify_checksum(line, 12, 12..14)?;
-    let call_sign = String::from_utf8_lossy(&line[4..12]).trim_end().to_string();
+    let call_sign = decode_control_callsign(&line[4..12])?;
     Ok(CallSignMessage { call_sign })
 }
 
@@ -167,13 +167,13 @@ fn decode_mode(line: &[u8]) -> Result<ModeMessage> {
         return Err(Gdl90Error::ControlFormat("mode message must be 17 bytes"));
     }
     verify_checksum(line, 14, 14..16)?;
-    let mode = ControlMode::from_byte(line[4])?;
-    let ident = IdentStatus::from_byte(line[6])?;
-    let squawk = String::from_utf8_lossy(&line[8..12]).to_string();
+    let mode = ControlMode::from_raw(line[4])?;
+    let ident = IdentStatus::from_raw(line[6])?;
+    let squawk = decode_ascii_digits_field(&line[8..12], "squawk")?;
     if !squawk.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(Gdl90Error::ControlFormat("squawk must be 4 digits"));
     }
-    let emergency = EmergencyCode::from_byte(line[12])?;
+    let emergency = EmergencyCode::from_raw(line[12])?;
     match line[13] {
         b'1' => {}
         _ => return Err(Gdl90Error::ControlFormat("health bit must be '1'")),
@@ -189,12 +189,12 @@ fn decode_mode(line: &[u8]) -> Result<ModeMessage> {
 fn encode_mode(message: &ModeMessage) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(17);
     out.extend_from_slice(b"^MD ");
-    out.push(message.mode.byte());
+    out.push(message.mode.raw());
     out.push(b',');
-    out.push(message.ident.byte());
+    out.push(message.ident.raw());
     out.push(b',');
     out.extend_from_slice(&encode_ascii_digits(&message.squawk, 4, "squawk")?);
-    out.push(message.emergency.byte());
+    out.push(message.emergency.raw());
     out.push(b'1');
     let checksum = hex_checksum(&out);
     out.extend_from_slice(&checksum);
@@ -209,11 +209,31 @@ fn decode_vfr_code(line: &[u8]) -> Result<VfrCodeMessage> {
         ));
     }
     verify_checksum(line, 8, 8..10)?;
-    let vfr_code = String::from_utf8_lossy(&line[4..8]).to_string();
+    let vfr_code = decode_ascii_digits_field(&line[4..8], "VFR code")?;
     if !vfr_code.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(Gdl90Error::ControlFormat("VFR code must be 4 digits"));
     }
     Ok(VfrCodeMessage { vfr_code })
+}
+
+fn decode_ascii_digits_field(bytes: &[u8], field: &'static str) -> Result<String> {
+    std::str::from_utf8(bytes)
+        .map(|value| value.to_string())
+        .map_err(|_| Gdl90Error::ControlFormat(field))
+}
+
+fn decode_control_callsign(bytes: &[u8]) -> Result<String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| Gdl90Error::ControlFormat("call sign must be ASCII"))?;
+    if !text
+        .bytes()
+        .all(|byte| matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b' ' | b'-'))
+    {
+        return Err(Gdl90Error::ControlFormat(
+            "call sign contains unsupported characters",
+        ));
+    }
+    Ok(text.trim_end().to_string())
 }
 
 fn encode_vfr_code(message: &VfrCodeMessage) -> Result<Vec<u8>> {

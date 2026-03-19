@@ -1,6 +1,8 @@
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
 
+use serde::Deserialize;
+
 use crate::error::{Gdl90Error, Result};
 use crate::foreflight;
 use crate::message::{FrameMessageDecoder, Message};
@@ -17,22 +19,16 @@ pub struct ForeFlightDiscoveryAnnouncement {
 
 impl ForeFlightDiscoveryAnnouncement {
     pub fn parse(json: &str) -> Result<Self> {
-        let app = extract_json_string_field(json, "App").ok_or(Gdl90Error::InvalidField {
-            field: "ForeFlight discovery JSON",
-            details: "missing App field".to_string(),
-        })?;
-        let gdl90_object =
-            extract_json_object_field(json, "GDL90").ok_or(Gdl90Error::InvalidField {
+        let envelope: ForeFlightDiscoveryEnvelope =
+            serde_json::from_str(json).map_err(|error| Gdl90Error::InvalidField {
                 field: "ForeFlight discovery JSON",
-                details: "missing GDL90 object".to_string(),
-            })?;
-        let gdl90_port =
-            extract_json_u16_field(gdl90_object, "port").ok_or(Gdl90Error::InvalidField {
-                field: "ForeFlight discovery JSON",
-                details: "missing GDL90.port field".to_string(),
+                details: error.to_string(),
             })?;
 
-        Ok(Self { app, gdl90_port })
+        Ok(Self {
+            app: envelope.app,
+            gdl90_port: envelope.gdl90.port,
+        })
     }
 
     pub fn is_foreflight(&self) -> bool {
@@ -42,6 +38,19 @@ impl ForeFlightDiscoveryAnnouncement {
     pub fn target_for_source(&self, source: SocketAddr) -> SocketAddr {
         SocketAddr::new(source.ip(), self.gdl90_port)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ForeFlightDiscoveryEnvelope {
+    #[serde(rename = "App")]
+    app: String,
+    #[serde(rename = "GDL90")]
+    gdl90: ForeFlightDiscoveryGdl90,
+}
+
+#[derive(Debug, Deserialize)]
+struct ForeFlightDiscoveryGdl90 {
+    port: u16,
 }
 
 #[derive(Debug)]
@@ -247,61 +256,6 @@ fn first_socket_addr(addrs: impl ToSocketAddrs, context: &'static str) -> Result
             field: "socket address",
             details: "no address resolved".to_string(),
         })
-}
-
-fn extract_json_string_field<'a>(json: &'a str, key: &str) -> Option<String> {
-    let value = extract_json_value_region(json, key)?;
-    let trimmed = value.trim_start();
-    let start = trimmed.find('"')?;
-    let rest = &trimmed[start + 1..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-fn extract_json_object_field<'a>(json: &'a str, key: &str) -> Option<&'a str> {
-    let value = extract_json_value_region(json, key)?;
-    let trimmed = value.trim_start();
-    let mut chars = trimmed.char_indices();
-    let (_, first) = chars.next()?;
-    if first != '{' {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    for (index, ch) in trimmed.char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&trimmed[..=index]);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn extract_json_u16_field(json: &str, key: &str) -> Option<u16> {
-    let value = extract_json_value_region(json, key)?;
-    let trimmed = value.trim_start();
-    let digits: String = trimmed
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect();
-    if digits.is_empty() {
-        return None;
-    }
-    digits.parse().ok()
-}
-
-fn extract_json_value_region<'a>(json: &'a str, key: &str) -> Option<&'a str> {
-    let pattern = format!("\"{key}\"");
-    let key_start = json.find(&pattern)?;
-    let after_key = &json[key_start + pattern.len()..];
-    let colon_index = after_key.find(':')?;
-    Some(&after_key[colon_index + 1..])
 }
 
 #[cfg(test)]

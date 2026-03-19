@@ -39,12 +39,10 @@ pub fn read_datagram_file(path: impl AsRef<Path>) -> Result<Vec<RecordedDatagram
             context: "read datagram file",
             details: error.to_string(),
         })?;
-        if let Some(datagram) =
-            parse_datagram_line(&line).map_err(|error| Gdl90Error::InvalidField {
-                field: "datagram file line",
-                details: format!("line {}: {error}", line_number + 1),
-            })?
-        {
+        if let Some(datagram) = parse_datagram_line(&line).map_err(|error| Gdl90Error::InvalidField {
+            field: "datagram file line",
+            details: format!("line {}: {error}", line_number + 1),
+        })? {
             datagrams.push(datagram);
         }
     }
@@ -90,7 +88,7 @@ pub fn append_datagram(path: impl AsRef<Path>, datagram: &RecordedDatagram) -> R
     })
 }
 
-pub fn parse_datagram_line(line: &str) -> std::result::Result<Option<RecordedDatagram>, String> {
+pub fn parse_datagram_line(line: &str) -> Result<Option<RecordedDatagram>> {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
         return Ok(None);
@@ -101,15 +99,24 @@ pub fn parse_datagram_line(line: &str) -> std::result::Result<Option<RecordedDat
         let delay_text = parts
             .next()
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| "missing delay value".to_string())?;
+            .ok_or(Gdl90Error::InvalidField {
+                field: "datagram delay",
+                details: "missing delay value".to_string(),
+            })?;
         let hex = parts
             .next()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| "missing hex payload after delay".to_string())?;
+            .ok_or(Gdl90Error::InvalidField {
+                field: "datagram line",
+                details: "missing hex payload after delay".to_string(),
+            })?;
         let delay_ms = delay_text
             .parse::<u64>()
-            .map_err(|error| format!("invalid delay: {error}"))?;
+            .map_err(|error| Gdl90Error::InvalidField {
+                field: "datagram delay",
+                details: format!("invalid delay: {error}"),
+            })?;
         (Some(delay_ms), hex)
     } else {
         (None, trimmed)
@@ -119,25 +126,36 @@ pub fn parse_datagram_line(line: &str) -> std::result::Result<Option<RecordedDat
     Ok(Some(RecordedDatagram { delay_ms, bytes }))
 }
 
-pub fn decode_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
+pub fn decode_hex(input: &str) -> Result<Vec<u8>> {
     let filtered = input
         .chars()
         .filter(|ch| !ch.is_ascii_whitespace() && *ch != ':' && *ch != '-')
         .collect::<String>();
     if filtered.is_empty() {
-        return Err("hex input is empty".to_string());
+        return Err(Gdl90Error::InvalidField {
+            field: "hex input",
+            details: "input is empty".to_string(),
+        });
     }
     if filtered.len() % 2 != 0 {
-        return Err("hex input must contain an even number of digits".to_string());
+        return Err(Gdl90Error::InvalidField {
+            field: "hex input",
+            details: "must contain an even number of digits".to_string(),
+        });
     }
 
     let mut out = Vec::with_capacity(filtered.len() / 2);
     let bytes = filtered.as_bytes();
     let mut index = 0usize;
     while index < bytes.len() {
-        let pair =
-            std::str::from_utf8(&bytes[index..index + 2]).map_err(|error| error.to_string())?;
-        let value = u8::from_str_radix(pair, 16).map_err(|error| error.to_string())?;
+        let pair = std::str::from_utf8(&bytes[index..index + 2]).map_err(|_| Gdl90Error::InvalidField {
+            field: "hex input",
+            details: format!("byte pair at offset {index} is not valid UTF-8"),
+        })?;
+        let value = u8::from_str_radix(pair, 16).map_err(|error| Gdl90Error::InvalidField {
+            field: "hex input",
+            details: format!("invalid hex byte at offset {index}: {error}"),
+        })?;
         out.push(value);
         index += 2;
     }
