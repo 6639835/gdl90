@@ -72,7 +72,7 @@ pub(crate) fn decode_fixed_utf8(bytes: &[u8], field: &'static str) -> Result<Str
     Ok(text.to_string())
 }
 
-pub(crate) fn encode_callsign(value: &str) -> Result<[u8; 8]> {
+pub(crate) fn encode_call_sign(value: &str) -> Result<[u8; 8]> {
     let uppercase = value.to_ascii_uppercase();
     if uppercase.len() > 8 {
         return Err(Gdl90Error::InvalidField {
@@ -96,7 +96,7 @@ pub(crate) fn encode_callsign(value: &str) -> Result<[u8; 8]> {
     Ok(out)
 }
 
-pub(crate) fn decode_callsign(bytes: &[u8; 8]) -> Result<String> {
+pub(crate) fn decode_call_sign(bytes: &[u8; 8]) -> Result<String> {
     for byte in bytes {
         if !matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b' ' | b'-') {
             return Err(Gdl90Error::InvalidField {
@@ -127,6 +127,32 @@ pub(crate) fn encode_ascii_digits(
     }
 
     Ok(value.as_bytes().to_vec())
+}
+
+pub(crate) fn decode_ascii_digits(
+    bytes: &[u8],
+    width: usize,
+    field: &'static str,
+) -> Result<String> {
+    if bytes.len() != width {
+        return Err(Gdl90Error::InvalidField {
+            field,
+            details: format!("must be exactly {width} ASCII digits"),
+        });
+    }
+
+    let value = std::str::from_utf8(bytes).map_err(|_| Gdl90Error::InvalidField {
+        field,
+        details: "must contain valid ASCII digits".to_string(),
+    })?;
+    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Gdl90Error::InvalidField {
+            field,
+            details: format!("must be exactly {width} ASCII digits"),
+        });
+    }
+
+    Ok(value.to_string())
 }
 
 pub(crate) fn hex_checksum(data: &[u8]) -> [u8; 2] {

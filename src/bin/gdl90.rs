@@ -13,7 +13,10 @@ use gdl90::message::{
     AddressType, Heartbeat, HeartbeatStatus, Message, OwnshipGeometricAltitude, TargetAlertStatus,
     TargetMisc, TargetReport, TrackType, VerticalFigureOfMerit,
 };
-use gdl90::report::{build_session_report, render_json_report, render_text_report};
+use gdl90::report::{
+    build_session_report, render_analysis_text, render_json_report, render_text_report,
+    render_validation_text,
+};
 use gdl90::session::{RecordedDatagram, append_datagram, decode_hex, read_datagram_file};
 use gdl90::support::{
     SupportState, control_panel_connections, control_panel_profiles, missing_sections,
@@ -145,42 +148,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let path = PathBuf::from(require_arg(args.next(), "session file")?);
             let datagrams = read_datagram_file(&path)?;
             let analysis = analyze_datagrams(&datagrams);
-            println!("datagrams: {}", analysis.datagram_count);
-            println!("total bytes: {}", analysis.total_bytes);
-            println!("delayed datagrams: {}", analysis.delayed_datagram_count);
-            println!(
-                "declared replay delay ms: {}",
-                analysis.total_declared_delay_ms
-            );
-            println!("decoded messages: {}", analysis.decoded_message_count);
-            println!("decode errors: {}", analysis.decode_error_count);
-            println!("empty datagrams: {}", analysis.empty_datagram_count);
-            println!(
-                "max messages per datagram: {}",
-                analysis.max_messages_per_datagram
-            );
-            println!("message counts:");
-            for (kind, count) in analysis.message_counts {
-                println!("  {kind}: {count}");
-            }
+            print!("{}", render_analysis_text(&analysis));
         }
         Some("validate-file") => {
             let path = PathBuf::from(require_arg(args.next(), "session file")?);
             let datagrams = read_datagram_file(&path)?;
             let validation = validate_datagrams(&datagrams);
-            if validation.is_valid() {
-                println!(
-                    "valid: {} datagrams, no decode issues",
-                    validation.datagram_count
-                );
-            } else {
-                println!(
-                    "invalid: {} of {} datagrams have issues",
-                    validation.invalid_datagram_count, validation.datagram_count
-                );
-                for issue in validation.issues {
-                    println!("  datagram {}: {}", issue.datagram_index, issue.details);
-                }
+            print!("{}", render_validation_text(&validation));
+            if !validation.is_valid() {
                 return Err("session validation failed".into());
             }
         }

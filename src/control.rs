@@ -1,5 +1,8 @@
 use crate::error::{Gdl90Error, Result};
-use crate::util::{encode_ascii_digits, encode_callsign, hex_checksum, parse_hex_byte};
+use crate::util::{
+    decode_ascii_digits, encode_ascii_digits, encode_call_sign as encode_fixed_call_sign,
+    hex_checksum, parse_hex_byte,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlMode {
@@ -155,7 +158,7 @@ fn decode_call_sign(line: &[u8]) -> Result<CallSignMessage> {
 fn encode_call_sign(message: &CallSignMessage) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(15);
     out.extend_from_slice(b"^CS ");
-    out.extend_from_slice(&encode_callsign(&message.call_sign)?);
+    out.extend_from_slice(&encode_fixed_call_sign(&message.call_sign)?);
     let checksum = hex_checksum(&out);
     out.extend_from_slice(&checksum);
     out.push(b'\r');
@@ -169,10 +172,8 @@ fn decode_mode(line: &[u8]) -> Result<ModeMessage> {
     verify_checksum(line, 14, 14..16)?;
     let mode = ControlMode::from_raw(line[4])?;
     let ident = IdentStatus::from_raw(line[6])?;
-    let squawk = decode_ascii_digits_field(&line[8..12], "squawk")?;
-    if !squawk.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Gdl90Error::ControlFormat("squawk must be 4 digits"));
-    }
+    let squawk = decode_ascii_digits(&line[8..12], 4, "squawk")
+        .map_err(|_| control_digit_format("squawk"))?;
     let emergency = EmergencyCode::from_raw(line[12])?;
     match line[13] {
         b'1' => {}
@@ -209,17 +210,17 @@ fn decode_vfr_code(line: &[u8]) -> Result<VfrCodeMessage> {
         ));
     }
     verify_checksum(line, 8, 8..10)?;
-    let vfr_code = decode_ascii_digits_field(&line[4..8], "VFR code")?;
-    if !vfr_code.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Gdl90Error::ControlFormat("VFR code must be 4 digits"));
-    }
+    let vfr_code = decode_ascii_digits(&line[4..8], 4, "VFR code")
+        .map_err(|_| control_digit_format("VFR code"))?;
     Ok(VfrCodeMessage { vfr_code })
 }
 
-fn decode_ascii_digits_field(bytes: &[u8], field: &'static str) -> Result<String> {
-    std::str::from_utf8(bytes)
-        .map(|value| value.to_string())
-        .map_err(|_| Gdl90Error::ControlFormat(field))
+fn control_digit_format(field: &'static str) -> Gdl90Error {
+    match field {
+        "squawk" => Gdl90Error::ControlFormat("squawk must be 4 digits"),
+        "VFR code" => Gdl90Error::ControlFormat("VFR code must be 4 digits"),
+        _ => Gdl90Error::ControlFormat("invalid fixed-width digit field"),
+    }
 }
 
 fn decode_control_callsign(bytes: &[u8]) -> Result<String> {

@@ -98,54 +98,7 @@ pub fn build_session_report(datagrams: &[RecordedDatagram]) -> SessionReport {
 pub fn render_text_report(report: &SessionReport) -> String {
     let mut out = String::new();
 
-    push_line(
-        &mut out,
-        format!("datagrams: {}", report.analysis.datagram_count),
-    );
-    push_line(
-        &mut out,
-        format!("total bytes: {}", report.analysis.total_bytes),
-    );
-    push_line(
-        &mut out,
-        format!(
-            "delayed datagrams: {}",
-            report.analysis.delayed_datagram_count
-        ),
-    );
-    push_line(
-        &mut out,
-        format!(
-            "declared replay delay ms: {}",
-            report.analysis.total_declared_delay_ms
-        ),
-    );
-    push_line(
-        &mut out,
-        format!(
-            "decoded messages: {}",
-            report.analysis.decoded_message_count
-        ),
-    );
-    push_line(
-        &mut out,
-        format!("decode errors: {}", report.analysis.decode_error_count),
-    );
-    push_line(
-        &mut out,
-        format!("empty datagrams: {}", report.analysis.empty_datagram_count),
-    );
-    push_line(
-        &mut out,
-        format!(
-            "max messages per datagram: {}",
-            report.analysis.max_messages_per_datagram
-        ),
-    );
-    push_line(&mut out, "message counts:".to_string());
-    for (kind, count) in &report.analysis.message_counts {
-        push_line(&mut out, format!("  {kind}: {count}"));
-    }
+    out.push_str(&render_analysis_text(&report.analysis));
     push_line(&mut out, "datagram details:".to_string());
     for datagram in &report.datagrams {
         push_line(
@@ -176,6 +129,79 @@ pub fn render_text_report(report: &SessionReport) -> String {
         }
         if datagram.frames.is_empty() {
             push_line(&mut out, "    no complete framed messages".to_string());
+        }
+    }
+
+    out
+}
+
+pub fn render_analysis_text(analysis: &SessionAnalysis) -> String {
+    let mut out = String::new();
+
+    push_line(&mut out, format!("datagrams: {}", analysis.datagram_count));
+    push_line(&mut out, format!("total bytes: {}", analysis.total_bytes));
+    push_line(
+        &mut out,
+        format!("delayed datagrams: {}", analysis.delayed_datagram_count),
+    );
+    push_line(
+        &mut out,
+        format!(
+            "declared replay delay ms: {}",
+            analysis.total_declared_delay_ms
+        ),
+    );
+    push_line(
+        &mut out,
+        format!("decoded messages: {}", analysis.decoded_message_count),
+    );
+    push_line(
+        &mut out,
+        format!("decode errors: {}", analysis.decode_error_count),
+    );
+    push_line(
+        &mut out,
+        format!("empty datagrams: {}", analysis.empty_datagram_count),
+    );
+    push_line(
+        &mut out,
+        format!(
+            "max messages per datagram: {}",
+            analysis.max_messages_per_datagram
+        ),
+    );
+    push_line(&mut out, "message counts:".to_string());
+    for (kind, count) in &analysis.message_counts {
+        push_line(&mut out, format!("  {kind}: {count}"));
+    }
+
+    out
+}
+
+pub fn render_validation_text(validation: &SessionValidation) -> String {
+    let mut out = String::new();
+
+    if validation.is_valid() {
+        push_line(
+            &mut out,
+            format!(
+                "valid: {} datagrams, no decode issues",
+                validation.datagram_count
+            ),
+        );
+    } else {
+        push_line(
+            &mut out,
+            format!(
+                "invalid: {} of {} datagrams have issues",
+                validation.invalid_datagram_count, validation.datagram_count
+            ),
+        );
+        for issue in &validation.issues {
+            push_line(
+                &mut out,
+                format!("  datagram {}: {}", issue.datagram_index, issue.details),
+            );
         }
     }
 

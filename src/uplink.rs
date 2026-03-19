@@ -199,7 +199,7 @@ pub struct UatUplinkPayload {
 }
 
 impl UatUplinkPayload {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != UAT_UPLINK_PAYLOAD_LEN {
             return Err(Gdl90Error::InvalidLength {
                 context: "UAT uplink payload",
@@ -220,7 +220,7 @@ impl UatUplinkPayload {
         })
     }
 
-    pub fn as_bytes(&self) -> [u8; UAT_UPLINK_PAYLOAD_LEN] {
+    pub fn encode(&self) -> [u8; UAT_UPLINK_PAYLOAD_LEN] {
         let mut out = [0u8; UAT_UPLINK_PAYLOAD_LEN];
         out[..UAT_HEADER_LEN].copy_from_slice(&self.header);
         out[UAT_HEADER_LEN..].copy_from_slice(&self.application_data);
@@ -404,14 +404,14 @@ impl InformationFrame {
                 details: "frame does not contain a FIS-B APDU".to_string(),
             });
         }
-        Apdu::from_bytes(&self.data)
+        Apdu::decode(&self.data)
     }
 
     pub fn from_apdu(apdu: &Apdu) -> Result<Self> {
         Ok(Self {
             reserved: 0,
             frame_type: FrameType::FisBApdu,
-            data: apdu.to_bytes()?,
+            data: apdu.encode()?,
         })
     }
 
@@ -422,14 +422,14 @@ impl InformationFrame {
                 details: "frame does not contain a Current Report List".to_string(),
             });
         }
-        CurrentReportList::from_bytes(&self.data)
+        CurrentReportList::decode(&self.data)
     }
 
     pub fn from_current_report_list(crl: &CurrentReportList) -> Result<Self> {
         Ok(Self {
             reserved: 0,
             frame_type: FrameType::CurrentReportList,
-            data: crl.to_bytes()?,
+            data: crl.encode()?,
         })
     }
 
@@ -571,7 +571,7 @@ impl CurrentReportList {
         Ok(())
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < 4 {
             return Err(Gdl90Error::InvalidLength {
                 context: "Current Report List",
@@ -633,7 +633,7 @@ impl CurrentReportList {
         Ok(crl)
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
 
         let mut out =
@@ -663,7 +663,7 @@ impl CurrentReportList {
 }
 
 impl CurrentReportListItem {
-    pub fn validate(self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.report_month_or_year > 0x7F {
             return Err(Gdl90Error::InvalidField {
                 field: "Current Report List report month or year",
@@ -721,7 +721,7 @@ pub struct Apdu {
 }
 
 impl Apdu {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < MIN_APDU_HEADER_LEN {
             return Err(Gdl90Error::InvalidLength {
                 context: "APDU",
@@ -748,11 +748,11 @@ impl Apdu {
         Ok(apdu)
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         self.header.validate_supported_by_current_parser()?;
         self.validate_payload_len()?;
 
-        let header = self.header.to_bytes()?;
+        let header = self.header.encode()?;
         let mut out = Vec::with_capacity(header.len() + self.payload.len());
         out.extend_from_slice(&header);
         out.extend_from_slice(&self.payload);
@@ -859,7 +859,7 @@ pub struct ApduSegmentation {
 }
 
 impl ApduHeader {
-    pub fn validate(self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.product_id > 0x07FF {
             return Err(Gdl90Error::InvalidField {
                 field: "APDU product id",
@@ -1017,7 +1017,7 @@ impl ApduHeader {
         Ok((header, header_len))
     }
 
-    pub fn from_bytes(bytes: [u8; 4]) -> Self {
+    pub fn from_minimal_bytes(bytes: [u8; 4]) -> Self {
         let word = u32::from_be_bytes(bytes);
         Self {
             application_flag: ((word >> 31) & 0x01) != 0,
@@ -1034,11 +1034,11 @@ impl ApduHeader {
         }
     }
 
-    pub fn has_product_descriptor_options(self) -> bool {
+    pub fn has_product_descriptor_options(&self) -> bool {
         self.application_flag || self.geo_flag || self.product_file_flag
     }
 
-    pub fn validate_supported_by_current_parser(self) -> Result<()> {
+    pub fn validate_supported_by_current_parser(&self) -> Result<()> {
         self.validate()?;
 
         if self.has_product_descriptor_options() {
@@ -1051,7 +1051,7 @@ impl ApduHeader {
         Ok(())
     }
 
-    pub fn validate_minimal_uat(self) -> Result<()> {
+    pub fn validate_minimal_uat(&self) -> Result<()> {
         self.validate_supported_by_current_parser()?;
         if self.time_option != 0 || self.seconds.is_some() || self.month_day.is_some() {
             return Err(Gdl90Error::InvalidField {
@@ -1069,7 +1069,7 @@ impl ApduHeader {
         Ok(())
     }
 
-    pub fn to_bytes(self) -> Result<Vec<u8>> {
+    pub fn encode(self) -> Result<Vec<u8>> {
         self.validate()?;
 
         let mut writer = BitWriter::new();

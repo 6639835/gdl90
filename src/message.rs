@@ -6,7 +6,7 @@ use crate::foreflight::{
 use crate::frame::{FrameDecoder, encode_frame};
 use crate::uplink::UatUplinkPayload;
 use crate::util::{
-    decode_callsign, decode_uat_latitude, decode_uat_longitude, degrees_to_lat_lon,
+    decode_call_sign, decode_uat_latitude, decode_uat_longitude, degrees_to_lat_lon,
     lat_lon_to_degrees, read_be_i16, read_be_i24, read_le_u24, write_le_u24,
 };
 
@@ -194,12 +194,12 @@ impl Initialization {
         })
     }
 
-    pub fn encode(&self) -> Vec<u8> {
-        vec![
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        Ok(vec![
             INITIALIZATION_MESSAGE_ID,
             ((self.audio_test as u8) << 6) | ((self.audio_inhibit as u8) << 1) | self.cdti_ok as u8,
             ((self.csa_audio_disable as u8) << 1) | self.csa_disable as u8,
-        ]
+        ])
     }
 }
 
@@ -221,7 +221,7 @@ impl UplinkData {
             });
         }
         let tor = read_le_u24(&payload[1..4]);
-        let payload = UatUplinkPayload::from_bytes(&payload[4..])?;
+        let payload = UatUplinkPayload::decode(&payload[4..])?;
         if tor != 0xFF_FFFF && tor > MAX_TIME_OF_RECEPTION_TICKS {
             return Err(Gdl90Error::InvalidField {
                 field: "time of reception",
@@ -248,7 +248,7 @@ impl UplinkData {
         let mut out = Vec::with_capacity(Self::LEN);
         out.push(UPLINK_DATA_MESSAGE_ID);
         out.extend_from_slice(&write_le_u24(self.time_of_reception.unwrap_or(0xFF_FFFF))?);
-        out.extend_from_slice(&self.payload.as_bytes());
+        out.extend_from_slice(&self.payload.encode());
         Ok(out)
     }
 }
@@ -497,7 +497,7 @@ impl TargetReport {
                 }
                 emitter
             },
-            call_sign: decode_callsign(&call_sign_bytes)?,
+            call_sign: decode_call_sign(&call_sign_bytes)?,
             emergency_priority_code: {
                 let emergency = payload[27] >> 4;
                 if emergency > 6 {
@@ -848,8 +848,8 @@ pub struct DecodedUatStateVector {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UatCallsignType {
-    Callsign,
+pub enum UatCallSignType {
+    CallSign,
     Squawk,
 }
 
@@ -889,8 +889,8 @@ pub enum UatHeadingType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedUatModeStatus {
     pub emitter_category: u8,
-    pub callsign: Option<String>,
-    pub callsign_type: Option<UatCallsignType>,
+    pub call_sign: Option<String>,
+    pub call_sign_type: Option<UatCallSignType>,
     pub emergency_status: UatEmergencyStatus,
     pub uat_version: u8,
     pub sil: u8,
@@ -1178,25 +1178,25 @@ fn decode_uat_mode_status(mode_status: &[u8; 12]) -> DecodedUatModeStatus {
     let second = ((mode_status[2] as u16) << 8) | mode_status[3] as u16;
     let third = ((mode_status[4] as u16) << 8) | mode_status[5] as u16;
 
-    let mut callsign = String::with_capacity(8);
-    callsign.push(UAT_BASE40_ALPHABET[((first / 40) % 40) as usize]);
-    callsign.push(UAT_BASE40_ALPHABET[(first % 40) as usize]);
-    callsign.push(UAT_BASE40_ALPHABET[((second / 1600) % 40) as usize]);
-    callsign.push(UAT_BASE40_ALPHABET[((second / 40) % 40) as usize]);
-    callsign.push(UAT_BASE40_ALPHABET[(second % 40) as usize]);
-    callsign.push(UAT_BASE40_ALPHABET[((third / 1600) % 40) as usize]);
-    callsign.push(UAT_BASE40_ALPHABET[((third / 40) % 40) as usize]);
-    callsign.push(UAT_BASE40_ALPHABET[(third % 40) as usize]);
-    let callsign = callsign.trim_end().to_string();
-    let callsign_present = !callsign.is_empty();
+    let mut call_sign = String::with_capacity(8);
+    call_sign.push(UAT_BASE40_ALPHABET[((first / 40) % 40) as usize]);
+    call_sign.push(UAT_BASE40_ALPHABET[(first % 40) as usize]);
+    call_sign.push(UAT_BASE40_ALPHABET[((second / 1600) % 40) as usize]);
+    call_sign.push(UAT_BASE40_ALPHABET[((second / 40) % 40) as usize]);
+    call_sign.push(UAT_BASE40_ALPHABET[(second % 40) as usize]);
+    call_sign.push(UAT_BASE40_ALPHABET[((third / 1600) % 40) as usize]);
+    call_sign.push(UAT_BASE40_ALPHABET[((third / 40) % 40) as usize]);
+    call_sign.push(UAT_BASE40_ALPHABET[(third % 40) as usize]);
+    let call_sign = call_sign.trim_end().to_string();
+    let call_sign_present = !call_sign.is_empty();
 
     DecodedUatModeStatus {
         emitter_category: ((first / 1600) % 40) as u8,
-        callsign: callsign_present.then_some(callsign),
-        callsign_type: callsign_present.then_some(if (mode_status[9] & 0x02) != 0 {
-            UatCallsignType::Callsign
+        call_sign: call_sign_present.then_some(call_sign),
+        call_sign_type: call_sign_present.then_some(if (mode_status[9] & 0x02) != 0 {
+            UatCallSignType::CallSign
         } else {
-            UatCallsignType::Squawk
+            UatCallSignType::Squawk
         }),
         emergency_status: UatEmergencyStatus::from_raw(mode_status[6] >> 5),
         uat_version: (mode_status[6] >> 2) & 0x07,
@@ -1340,11 +1340,11 @@ impl HeightAboveTerrain {
         })
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(Self::LEN);
         out.push(HEIGHT_ABOVE_TERRAIN_MESSAGE_ID);
         out.extend_from_slice(&self.feet.unwrap_or(i16::MIN).to_be_bytes());
-        out
+        Ok(out)
     }
 }
 
@@ -1573,9 +1573,9 @@ impl Message {
     pub fn encode(&self) -> Result<Vec<u8>> {
         match self {
             Self::Heartbeat(message) => message.encode(),
-            Self::Initialization(message) => Ok(message.encode()),
+            Self::Initialization(message) => message.encode(),
             Self::UplinkData(message) => message.encode(),
-            Self::HeightAboveTerrain(message) => Ok(message.encode()),
+            Self::HeightAboveTerrain(message) => message.encode(),
             Self::OwnshipReport(message) => message.encode(OWNSHIP_REPORT_MESSAGE_ID),
             Self::OwnshipGeometricAltitude(message) => message.encode(),
             Self::TrafficReport(message) => message.encode(TRAFFIC_REPORT_MESSAGE_ID),
@@ -1599,7 +1599,7 @@ impl Message {
 
 fn format_target_summary(label: &str, message: &TargetReport) -> String {
     format!(
-        "{label} addr={:#08x} callsign={} lat={:.5} lon={:.5} alt_ft={:?}",
+        "{label} addr={:#08x} call_sign={} lat={:.5} lon={:.5} alt_ft={:?}",
         message.participant_address,
         message.call_sign,
         message.latitude_degrees,

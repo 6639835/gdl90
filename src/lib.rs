@@ -27,7 +27,7 @@ pub use crate::message::{
     DecodedUatStateVector, FrameMessageDecoder, Heartbeat, HeartbeatStatus, HeightAboveTerrain,
     Initialization, LongUatPayload, Message, OwnshipGeometricAltitude, PassThroughReport,
     TargetAlertStatus, TargetMisc, TargetReport, TrackType, UatAddressQualifier,
-    UatAdsbPayloadHeader, UatAirGroundState, UatAltitude, UatAltitudeType, UatCallsignType,
+    UatAdsbPayloadHeader, UatAirGroundState, UatAltitude, UatAltitudeType, UatCallSignType,
     UatDimensions, UatEmergencyStatus, UatHeadingType, UatPosition, UatTrack, UatVerticalRate,
     VerticalFigureOfMerit,
 };

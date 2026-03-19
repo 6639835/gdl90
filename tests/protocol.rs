@@ -538,7 +538,7 @@ fn nexrad_rle_block_round_trip() {
 
 #[test]
 fn apdu_rejects_unsupported_descriptor_options_and_invalid_time_flags() {
-    let error = gdl90::uplink::Apdu::from_bytes(&[0x80, 0x00, 0x00, 0x00]).unwrap_err();
+    let error = gdl90::uplink::Apdu::decode(&[0x80, 0x00, 0x00, 0x00]).unwrap_err();
     assert!(
         matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU product descriptor options")
     );
@@ -556,7 +556,7 @@ fn apdu_rejects_unsupported_descriptor_options_and_invalid_time_flags() {
         seconds: Some(3),
         segmentation: None,
     };
-    let error = header.to_bytes().unwrap_err();
+    let error = header.encode().unwrap_err();
     assert!(
         matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU time flags")
     );
@@ -746,7 +746,7 @@ fn apdu_supports_easa_time_variants_and_segmentation_block() {
         seconds: Some(56),
         segmentation: None,
     };
-    let seconds_bytes = header_with_seconds.to_bytes().unwrap();
+    let seconds_bytes = header_with_seconds.encode().unwrap();
     let (decoded_seconds, seconds_len) = ApduHeader::decode(&seconds_bytes).unwrap();
     assert_eq!(seconds_len, 5);
     assert_eq!(decoded_seconds, header_with_seconds);
@@ -768,7 +768,7 @@ fn apdu_supports_easa_time_variants_and_segmentation_block() {
             apdu_number: 4,
         }),
     };
-    let bytes = header_with_date_and_segmentation.to_bytes().unwrap();
+    let bytes = header_with_date_and_segmentation.encode().unwrap();
     let (decoded, len) = ApduHeader::decode(&bytes).unwrap();
     assert_eq!(len, 9);
     assert_eq!(decoded, header_with_date_and_segmentation);
@@ -1219,8 +1219,8 @@ fn decoded_uat_pass_through_fields_match_known_long_report_sample() {
 
     let mode_status = payload.decoded_mode_status();
     assert_eq!(mode_status.emitter_category, 0);
-    assert_eq!(mode_status.callsign, None);
-    assert_eq!(mode_status.callsign_type, None);
+    assert_eq!(mode_status.call_sign, None);
+    assert_eq!(mode_status.call_sign_type, None);
     assert_eq!(mode_status.emergency_status, UatEmergencyStatus::None);
     assert_eq!(mode_status.uat_version, 2);
     assert_eq!(mode_status.sil, 2);

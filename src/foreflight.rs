@@ -159,7 +159,7 @@ impl ForeFlightCapabilities {
         datum | ((self.internet_policy.raw() as u32) << 1) | (self.reserved_bits & !0x07)
     }
 
-    pub fn validate(self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         self.internet_policy.validate()?;
         if self.reserved_bits != 0 {
             return Err(Gdl90Error::InvalidField {
