@@ -422,7 +422,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "4.4",
             "FIS-B Products",
             SupportState::Partial,
-            "Generic Text and NEXRAD products are typed; other product IDs are preserved and surfaced as unknown registry products, but not decoded.",
+            "Generic Text and NEXRAD products are decoded; additional FAA/SBS registry product IDs are recognized by name and preserved raw, but not payload-decoded.",
         ),
         support_entry(
             "4.4.1",
@@ -439,8 +439,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4.5",
             "Future Products",
-            SupportState::NotImplemented,
-            "Future FAA registry products are preserved by product ID, but no product-specific decoding is possible until definitions are provided.",
+            SupportState::Partial,
+            "Later FAA/SBS registry products and ancillary UAT frames can be identified and preserved, but product-specific payload decoding still depends on DO-358A definitions.",
         ),
         support_entry(
             "5",

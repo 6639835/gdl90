@@ -29,5 +29,6 @@ pub use crate::message::{
     UatAdsbPayloadHeader, VerticalFigureOfMerit,
 };
 pub use crate::uplink::{
-    ApduMonthDay, ApduSegmentation, FisbProductId, NexradBlockReference, NexradIntensity,
+    ApduMonthDay, ApduSegmentation, CurrentReportList, CurrentReportListItem, FisbProductId,
+    FrameType, NexradBlockReference, NexradIntensity, ServiceStatusSignal,
 };

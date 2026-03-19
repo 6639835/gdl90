@@ -16,10 +16,10 @@ use gdl90::message::{
 };
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
-    ApduHeader, ApduMonthDay, ApduSegmentation, FisbProduct, FisbProductId, FrameType,
-    GenericTextApdu, GenericTextField, GenericTextRecord, GenericTextRecordKind, InformationFrame,
-    NexradApdu, NexradBlock, NexradBlockReference, NexradIntensity, TextQualifier,
-    UatUplinkPayload,
+    ApduHeader, ApduMonthDay, ApduSegmentation, CurrentReportList, CurrentReportListItem,
+    FisbProduct, FisbProductId, FrameType, GenericTextApdu, GenericTextField,
+    GenericTextRecord, GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock,
+    NexradBlockReference, NexradIntensity, ServiceStatusSignal, TextQualifier, UatUplinkPayload,
 };
 
 fn example_target_report() -> TargetReport {
@@ -800,6 +800,24 @@ fn apdu_and_product_surface_known_and_unknown_product_ids() {
         unknown.decode_product().unwrap().product_id(),
         FisbProductId::Unknown(999)
     );
+
+    let known_name = gdl90::uplink::Apdu {
+        header: ApduHeader {
+            application_flag: false,
+            geo_flag: false,
+            product_file_flag: false,
+            product_id: 64,
+            segmentation_flag: false,
+            time_option: 0,
+            month_day: None,
+            hours: 0,
+            minutes: 0,
+            seconds: None,
+            segmentation: None,
+        },
+        payload: vec![],
+    };
+    assert_eq!(known_name.product_name(), "NEXRAD CONUS");
 }
 
 #[test]
@@ -1143,7 +1161,7 @@ fn information_frame_encoding_rejects_reserved_bits_and_reserved_frame_types() {
         [0u8; 8],
         &[InformationFrame {
             reserved: 0,
-            frame_type: FrameType::Reserved(1),
+            frame_type: FrameType::Reserved(2),
             data: vec![],
         }],
     )
@@ -1162,6 +1180,71 @@ fn information_frame_encoding_rejects_reserved_bits_and_reserved_frame_types() {
     let error = payload.information_frames().unwrap_err();
     assert!(
         matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "I-Frame reserved bits")
+    );
+}
+
+#[test]
+fn frame_type_supports_faa_sbs_extensions() {
+    assert_eq!(FrameType::from_raw(0x0), FrameType::FisBApdu);
+    assert_eq!(FrameType::from_raw(0x1), FrameType::Developmental);
+    assert_eq!(FrameType::from_raw(0xE), FrameType::CurrentReportList);
+    assert_eq!(FrameType::from_raw(0xF), FrameType::ServiceStatus);
+    assert_eq!(FrameType::CurrentReportList.raw(), 0xE);
+    assert_eq!(FrameType::ServiceStatus.raw(), 0xF);
+}
+
+#[test]
+fn service_status_frame_round_trips() {
+    let signals = vec![
+        ServiceStatusSignal {
+            address_qualifier: 0,
+            address: 0xAB_CD_EF,
+        },
+        ServiceStatusSignal {
+            address_qualifier: 2,
+            address: 0x12_34_56,
+        },
+    ];
+
+    let frame = InformationFrame::from_service_status(&signals).unwrap();
+    assert_eq!(frame.frame_type, FrameType::ServiceStatus);
+    assert_eq!(frame.service_status().unwrap(), signals);
+}
+
+#[test]
+fn current_report_list_round_trips() {
+    let crl = CurrentReportList {
+        product_id: 8,
+        tfr_notam: true,
+        overflow: false,
+        product_range_nm: 125,
+        location_id: Some(*b"KPD"),
+        reports: vec![
+            CurrentReportListItem {
+                report_month_or_year: 3,
+                text: true,
+                graphic: false,
+                report_number: 0x1234,
+            },
+            CurrentReportListItem {
+                report_month_or_year: 4,
+                text: false,
+                graphic: true,
+                report_number: 0x0234,
+            },
+        ],
+    };
+
+    let frame = InformationFrame::from_current_report_list(&crl).unwrap();
+    assert_eq!(frame.frame_type, FrameType::CurrentReportList);
+    assert_eq!(frame.current_report_list().unwrap(), crl);
+}
+
+#[test]
+fn current_report_list_rejects_reserved_item_bit() {
+    let error = CurrentReportListItem::decode(&[0x80, 0x00, 0x00]).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "Current Report List item reserved bit")
     );
 }
 

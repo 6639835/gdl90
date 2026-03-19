@@ -5,6 +5,7 @@ pub const APPLICATION_DATA_LEN: usize = 424;
 pub const MAX_APDU_LEN: usize = 422;
 pub const MIN_APDU_HEADER_LEN: usize = 4;
 pub const MAX_APDU_PAYLOAD_LEN: usize = MAX_APDU_LEN - MIN_APDU_HEADER_LEN;
+pub const MAX_CRL_REPORTS: usize = 138;
 pub const GENERIC_TEXT_PRODUCT_ID: u16 = 413;
 pub const NEXRAD_PRODUCT_ID: u16 = 63;
 pub const DLAC_RECORD_SEPARATOR: char = '\u{001E}';
@@ -43,6 +44,17 @@ impl FisbProductId {
         match self {
             Self::GenericText => "Generic Text",
             Self::Nexrad => "NEXRAD",
+            Self::Unknown(8) => "NOTAM/TFR",
+            Self::Unknown(11) => "AIRMET",
+            Self::Unknown(12) => "SIGMET",
+            Self::Unknown(13) => "SUA Status",
+            Self::Unknown(14) => "G-AIRMET",
+            Self::Unknown(15) => "Center Weather Advisory",
+            Self::Unknown(64) => "NEXRAD CONUS",
+            Self::Unknown(70) | Self::Unknown(71) => "Icing Forecast Potential",
+            Self::Unknown(84) => "Cloud Tops",
+            Self::Unknown(90) | Self::Unknown(91) => "Turbulence",
+            Self::Unknown(103) => "Lightning",
             Self::Unknown(_) => "Unknown",
         }
     }
@@ -187,15 +199,21 @@ impl UatUplinkPayload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameType {
     FisBApdu,
-    Reserved(u8),
     Developmental,
+    CurrentReportList,
+    ServiceStatus,
+    Reserved(u8),
 }
 
 impl FrameType {
     pub fn from_raw(value: u8) -> Self {
         match value {
             0x0 => Self::FisBApdu,
-            0xF => Self::Developmental,
+            // FAA-E-3006 Rev. B updates the later UAT uplink frame-type assignments
+            // beyond the older Garmin ICD.
+            0x1 => Self::Developmental,
+            0xE => Self::CurrentReportList,
+            0xF => Self::ServiceStatus,
             other => Self::Reserved(other),
         }
     }
@@ -203,7 +221,9 @@ impl FrameType {
     pub fn raw(self) -> u8 {
         match self {
             Self::FisBApdu => 0x0,
-            Self::Developmental => 0xF,
+            Self::Developmental => 0x1,
+            Self::CurrentReportList => 0xE,
+            Self::ServiceStatus => 0xF,
             Self::Reserved(value) => value & 0x0F,
         }
     }
@@ -250,6 +270,304 @@ impl InformationFrame {
             frame_type: FrameType::FisBApdu,
             data: apdu.to_bytes()?,
         })
+    }
+
+    pub fn current_report_list(&self) -> Result<CurrentReportList> {
+        if self.frame_type != FrameType::CurrentReportList {
+            return Err(Gdl90Error::InvalidField {
+                field: "frame type",
+                details: "frame does not contain a Current Report List".to_string(),
+            });
+        }
+        CurrentReportList::from_bytes(&self.data)
+    }
+
+    pub fn from_current_report_list(crl: &CurrentReportList) -> Result<Self> {
+        Ok(Self {
+            reserved: 0,
+            frame_type: FrameType::CurrentReportList,
+            data: crl.to_bytes()?,
+        })
+    }
+
+    pub fn service_status(&self) -> Result<Vec<ServiceStatusSignal>> {
+        if self.frame_type != FrameType::ServiceStatus {
+            return Err(Gdl90Error::InvalidField {
+                field: "frame type",
+                details: "frame does not contain TIS-B / ADS-R service status".to_string(),
+            });
+        }
+
+        let chunks = self.data.chunks_exact(ServiceStatusSignal::LEN);
+        if !chunks.remainder().is_empty() {
+            return Err(Gdl90Error::InvalidLength {
+                context: "TIS-B / ADS-R service status frame",
+                expected: "a multiple of 4 bytes",
+                actual: self.data.len(),
+            });
+        }
+
+        chunks.map(ServiceStatusSignal::decode).collect()
+    }
+
+    pub fn from_service_status(signals: &[ServiceStatusSignal]) -> Result<Self> {
+        let mut data = Vec::with_capacity(signals.len() * ServiceStatusSignal::LEN);
+        for signal in signals {
+            data.extend_from_slice(&signal.encode()?);
+        }
+        Ok(Self {
+            reserved: 0,
+            frame_type: FrameType::ServiceStatus,
+            data,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceStatusSignal {
+    pub address_qualifier: u8,
+    pub address: u32,
+}
+
+impl ServiceStatusSignal {
+    pub const LEN: usize = 4;
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != Self::LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "TIS-B / ADS-R service status signal",
+                expected: "4 bytes",
+                actual: bytes.len(),
+            });
+        }
+
+        if (bytes[0] & 0xF0) != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "TIS-B / ADS-R service status reserved bits",
+                details: "bits 7..4 must be zero".to_string(),
+            });
+        }
+        if (bytes[0] & 0x08) == 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "TIS-B / ADS-R service status signal type",
+                details: "signal type bit must be set".to_string(),
+            });
+        }
+
+        Ok(Self {
+            address_qualifier: bytes[0] & 0x07,
+            address: ((bytes[1] as u32) << 16) | ((bytes[2] as u32) << 8) | bytes[3] as u32,
+        })
+    }
+
+    pub fn encode(self) -> Result<[u8; Self::LEN]> {
+        if self.address_qualifier > 0x07 {
+            return Err(Gdl90Error::InvalidField {
+                field: "TIS-B / ADS-R service status address qualifier",
+                details: "must fit in 3 bits".to_string(),
+            });
+        }
+        if self.address > 0xFF_FFFF {
+            return Err(Gdl90Error::InvalidField {
+                field: "TIS-B / ADS-R service status address",
+                details: "must fit in 24 bits".to_string(),
+            });
+        }
+
+        Ok([
+            0x08 | self.address_qualifier,
+            ((self.address >> 16) & 0xFF) as u8,
+            ((self.address >> 8) & 0xFF) as u8,
+            (self.address & 0xFF) as u8,
+        ])
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentReportList {
+    pub product_id: u16,
+    pub tfr_notam: bool,
+    pub overflow: bool,
+    pub product_range_nm: u16,
+    pub location_id: Option<[u8; 3]>,
+    pub reports: Vec<CurrentReportListItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentReportListItem {
+    pub report_month_or_year: u8,
+    pub text: bool,
+    pub graphic: bool,
+    pub report_number: u16,
+}
+
+impl CurrentReportList {
+    pub fn validate(&self) -> Result<()> {
+        if self.product_id > 0x07FF {
+            return Err(Gdl90Error::InvalidField {
+                field: "Current Report List product id",
+                details: "must fit in 11 bits".to_string(),
+            });
+        }
+        if self.product_range_nm > 1_275 || self.product_range_nm % 5 != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "Current Report List product range",
+                details: "must be encoded in 5 NM increments from 0 to 1275 NM".to_string(),
+            });
+        }
+        if self.reports.len() > MAX_CRL_REPORTS {
+            return Err(Gdl90Error::InvalidLength {
+                context: "Current Report List",
+                expected: "at most 138 report items",
+                actual: self.reports.len(),
+            });
+        }
+        for report in &self.reports {
+            report.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 4 {
+            return Err(Gdl90Error::InvalidLength {
+                context: "Current Report List",
+                expected: "at least 4 bytes",
+                actual: bytes.len(),
+            });
+        }
+
+        let product_id = ((bytes[0] as u16) << 3) | ((bytes[1] >> 5) as u16);
+        let tfr_notam = (bytes[1] & 0x10) != 0;
+        let reserved = (bytes[1] >> 2) & 0x03;
+        if reserved != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "Current Report List reserved bits",
+                details: "header reserved bits must be zero".to_string(),
+            });
+        }
+        let overflow = (bytes[1] & 0x02) != 0;
+        let has_location_id = (bytes[1] & 0x01) != 0;
+        let product_range_nm = (bytes[2] as u16) * 5;
+
+        let (location_id, count_index, item_offset) = if has_location_id {
+            if bytes.len() < 7 {
+                return Err(Gdl90Error::InvalidLength {
+                    context: "Current Report List",
+                    expected: "at least 7 bytes when a location id is present",
+                    actual: bytes.len(),
+                });
+            }
+            (Some([bytes[3], bytes[4], bytes[5]]), 6usize, 7usize)
+        } else {
+            (None, 3usize, 4usize)
+        };
+
+        let count = bytes[count_index] as usize;
+        let expected_len = item_offset + count * 3;
+        if bytes.len() != expected_len {
+            return Err(Gdl90Error::InvalidLength {
+                context: "Current Report List",
+                expected: "header plus 3 bytes per report item",
+                actual: bytes.len(),
+            });
+        }
+
+        let mut reports = Vec::with_capacity(count);
+        for chunk in bytes[item_offset..].chunks_exact(3) {
+            reports.push(CurrentReportListItem::decode(chunk)?);
+        }
+
+        let crl = Self {
+            product_id,
+            tfr_notam,
+            overflow,
+            product_range_nm,
+            location_id,
+            reports,
+        };
+        crl.validate()?;
+        Ok(crl)
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+
+        let mut out =
+            Vec::with_capacity(4 + self.location_id.map_or(0, |_| 3) + self.reports.len() * 3);
+        out.push((self.product_id >> 3) as u8);
+        let mut second = ((self.product_id & 0x07) as u8) << 5;
+        if self.tfr_notam {
+            second |= 0x10;
+        }
+        if self.overflow {
+            second |= 0x02;
+        }
+        if self.location_id.is_some() {
+            second |= 0x01;
+        }
+        out.push(second);
+        out.push((self.product_range_nm / 5) as u8);
+        if let Some(location_id) = self.location_id {
+            out.extend_from_slice(&location_id);
+        }
+        out.push(self.reports.len() as u8);
+        for report in &self.reports {
+            out.extend_from_slice(&report.encode()?);
+        }
+        Ok(out)
+    }
+}
+
+impl CurrentReportListItem {
+    pub fn validate(self) -> Result<()> {
+        if self.report_month_or_year > 0x7F {
+            return Err(Gdl90Error::InvalidField {
+                field: "Current Report List report month or year",
+                details: "must fit in 7 bits".to_string(),
+            });
+        }
+        if self.report_number > 0x3FFF {
+            return Err(Gdl90Error::InvalidField {
+                field: "Current Report List report number",
+                details: "must fit in 14 bits".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != 3 {
+            return Err(Gdl90Error::InvalidLength {
+                context: "Current Report List item",
+                expected: "3 bytes",
+                actual: bytes.len(),
+            });
+        }
+        if (bytes[0] & 0x80) != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "Current Report List item reserved bit",
+                details: "bit 7 must be zero".to_string(),
+            });
+        }
+
+        Ok(Self {
+            report_month_or_year: bytes[0] & 0x7F,
+            text: (bytes[1] & 0x80) != 0,
+            graphic: (bytes[1] & 0x40) != 0,
+            report_number: (((bytes[1] & 0x3F) as u16) << 8) | bytes[2] as u16,
+        })
+    }
+
+    pub fn encode(self) -> Result<[u8; 3]> {
+        self.validate()?;
+        Ok([
+            self.report_month_or_year & 0x7F,
+            ((self.text as u8) << 7)
+                | ((self.graphic as u8) << 6)
+                | ((self.report_number >> 8) as u8 & 0x3F),
+            (self.report_number & 0xFF) as u8,
+        ])
     }
 }
 
