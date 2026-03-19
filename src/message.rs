@@ -1,7 +1,7 @@
 use crate::error::{Gdl90Error, Result};
 use crate::foreflight::{
-    FOREFLIGHT_AHRS_SUB_ID, FOREFLIGHT_ID_SUB_ID, FOREFLIGHT_MESSAGE_ID, ForeFlightAhrsMessage,
-    ForeFlightIdMessage,
+    FOREFLIGHT_AHRS_MESSAGE_SUB_ID, FOREFLIGHT_ID_MESSAGE_SUB_ID, FOREFLIGHT_MESSAGE_ID,
+    ForeFlightAhrsMessage, ForeFlightIdMessage,
 };
 use crate::frame::{FrameDecoder, encode_frame};
 use crate::uplink::UatUplinkPayload;
@@ -1142,10 +1142,10 @@ impl Message {
                 payload,
             )?)),
             FOREFLIGHT_MESSAGE_ID => match payload.get(1).copied() {
-                Some(FOREFLIGHT_ID_SUB_ID) => {
+                Some(FOREFLIGHT_ID_MESSAGE_SUB_ID) => {
                     Ok(Self::ForeFlightId(ForeFlightIdMessage::decode(payload)?))
                 }
-                Some(FOREFLIGHT_AHRS_SUB_ID) => Ok(Self::ForeFlightAhrs(
+                Some(FOREFLIGHT_AHRS_MESSAGE_SUB_ID) => Ok(Self::ForeFlightAhrs(
                     ForeFlightAhrsMessage::decode(payload)?,
                 )),
                 _ => Ok(Self::Unknown {

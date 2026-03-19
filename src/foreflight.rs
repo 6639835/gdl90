@@ -4,11 +4,11 @@ use crate::util::{decode_fixed_utf8, encode_fixed_utf8};
 use std::time::Duration;
 
 pub const FOREFLIGHT_MESSAGE_ID: u8 = 0x65;
-pub const FOREFLIGHT_ID_SUB_ID: u8 = 0x00;
-pub const FOREFLIGHT_AHRS_SUB_ID: u8 = 0x01;
-pub const FOREFLIGHT_MAX_PACKET_SIZE: usize = 1500;
+pub const FOREFLIGHT_ID_MESSAGE_SUB_ID: u8 = 0x00;
+pub const FOREFLIGHT_AHRS_MESSAGE_SUB_ID: u8 = 0x01;
+pub const FOREFLIGHT_MAX_DATAGRAM_SIZE: usize = 1500;
 pub const FOREFLIGHT_AHRS_RATE_HZ: u8 = 5;
-pub const FOREFLIGHT_DISCOVERY_INTERVAL_SECS: u64 = 5;
+pub const FOREFLIGHT_DISCOVERY_INTERVAL_SECONDS: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForeFlightCadenceProfile {
@@ -19,7 +19,7 @@ pub struct ForeFlightCadenceProfile {
 pub fn cadence_profile() -> ForeFlightCadenceProfile {
     ForeFlightCadenceProfile {
         ahrs_rate_hz: FOREFLIGHT_AHRS_RATE_HZ,
-        discovery_interval: Duration::from_secs(FOREFLIGHT_DISCOVERY_INTERVAL_SECS),
+        discovery_interval: Duration::from_secs(FOREFLIGHT_DISCOVERY_INTERVAL_SECONDS),
     }
 }
 
@@ -73,13 +73,13 @@ pub fn encode_datagram(messages: &[Message]) -> Result<Vec<u8>> {
         datagram.extend_from_slice(&message.encode_frame()?);
     }
 
-    if datagram.len() >= FOREFLIGHT_MAX_PACKET_SIZE {
+    if datagram.len() >= FOREFLIGHT_MAX_DATAGRAM_SIZE {
         return Err(Gdl90Error::InvalidField {
             field: "ForeFlight datagram size",
             details: format!(
                 "encoded datagram is {} bytes, must be smaller than {}",
                 datagram.len(),
-                FOREFLIGHT_MAX_PACKET_SIZE
+                FOREFLIGHT_MAX_DATAGRAM_SIZE
             ),
         });
     }
@@ -201,7 +201,7 @@ impl ForeFlightIdMessage {
                 actual: payload.len(),
             });
         }
-        if payload[0] != FOREFLIGHT_MESSAGE_ID || payload[1] != FOREFLIGHT_ID_SUB_ID {
+        if payload[0] != FOREFLIGHT_MESSAGE_ID || payload[1] != FOREFLIGHT_ID_MESSAGE_SUB_ID {
             return Err(Gdl90Error::InvalidField {
                 field: "ForeFlight ID header",
                 details: "unexpected message id or sub-id".to_string(),
@@ -236,7 +236,7 @@ impl ForeFlightIdMessage {
 
         let mut out = Vec::with_capacity(Self::LEN);
         out.push(FOREFLIGHT_MESSAGE_ID);
-        out.push(FOREFLIGHT_ID_SUB_ID);
+        out.push(FOREFLIGHT_ID_MESSAGE_SUB_ID);
         out.push(self.version);
         out.extend_from_slice(&self.device_serial_number.unwrap_or(u64::MAX).to_be_bytes());
         out.extend_from_slice(&encode_fixed_utf8::<8>(&self.device_name, "device name")?);
@@ -281,7 +281,7 @@ impl ForeFlightAhrsMessage {
                 actual: payload.len(),
             });
         }
-        if payload[0] != FOREFLIGHT_MESSAGE_ID || payload[1] != FOREFLIGHT_AHRS_SUB_ID {
+        if payload[0] != FOREFLIGHT_MESSAGE_ID || payload[1] != FOREFLIGHT_AHRS_MESSAGE_SUB_ID {
             return Err(Gdl90Error::InvalidField {
                 field: "ForeFlight AHRS header",
                 details: "unexpected message id or sub-id".to_string(),
@@ -342,7 +342,7 @@ impl ForeFlightAhrsMessage {
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(Self::LEN);
         out.push(FOREFLIGHT_MESSAGE_ID);
-        out.push(FOREFLIGHT_AHRS_SUB_ID);
+        out.push(FOREFLIGHT_AHRS_MESSAGE_SUB_ID);
         out.extend_from_slice(&encode_optional_signed_range(
             self.roll_tenths_degrees,
             0x7FFF,
