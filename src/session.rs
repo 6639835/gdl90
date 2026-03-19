@@ -39,10 +39,12 @@ pub fn read_datagram_file(path: impl AsRef<Path>) -> Result<Vec<RecordedDatagram
             context: "read datagram file",
             details: error.to_string(),
         })?;
-        if let Some(datagram) = parse_datagram_line(&line).map_err(|error| Gdl90Error::InvalidField {
-            field: "datagram file line",
-            details: format!("line {}: {error}", line_number + 1),
-        })? {
+        if let Some(datagram) =
+            parse_datagram_line(&line).map_err(|error| Gdl90Error::InvalidField {
+                field: "datagram file line",
+                details: format!("line {}: {error}", line_number + 1),
+            })?
+        {
             datagrams.push(datagram);
         }
     }
@@ -96,13 +98,14 @@ pub fn parse_datagram_line(line: &str) -> Result<Option<RecordedDatagram>> {
 
     let (delay_ms, hex) = if let Some(rest) = trimmed.strip_prefix('@') {
         let mut parts = rest.splitn(2, char::is_whitespace);
-        let delay_text = parts
-            .next()
-            .filter(|value| !value.is_empty())
-            .ok_or(Gdl90Error::InvalidField {
-                field: "datagram delay",
-                details: "missing delay value".to_string(),
-            })?;
+        let delay_text =
+            parts
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(Gdl90Error::InvalidField {
+                    field: "datagram delay",
+                    details: "missing delay value".to_string(),
+                })?;
         let hex = parts
             .next()
             .map(str::trim)
@@ -148,9 +151,11 @@ pub fn decode_hex(input: &str) -> Result<Vec<u8>> {
     let bytes = filtered.as_bytes();
     let mut index = 0usize;
     while index < bytes.len() {
-        let pair = std::str::from_utf8(&bytes[index..index + 2]).map_err(|_| Gdl90Error::InvalidField {
-            field: "hex input",
-            details: format!("byte pair at offset {index} is not valid UTF-8"),
+        let pair = std::str::from_utf8(&bytes[index..index + 2]).map_err(|_| {
+            Gdl90Error::InvalidField {
+                field: "hex input",
+                details: format!("byte pair at offset {index} is not valid UTF-8"),
+            }
         })?;
         let value = u8::from_str_radix(pair, 16).map_err(|error| Gdl90Error::InvalidField {
             field: "hex input",
