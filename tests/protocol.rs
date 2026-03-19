@@ -400,7 +400,7 @@ fn nexrad_intensity_rows_expose_table_20_semantics() {
 fn nexrad_block_reference_exposes_public_example_bits() {
     let reference = NexradBlockReference::from_raw([0x84, 0xA5, 0x70]);
     assert!(reference.is_run_length_encoded);
-    assert!(!reference.north);
+    assert!(reference.north);
     assert_eq!(reference.scale, 0);
     assert_eq!(reference.block_number, 0x04_A5_70);
     assert_eq!(reference.to_raw(), [0x84, 0xA5, 0x70]);
@@ -412,7 +412,7 @@ fn nexrad_block_reference_exposes_public_example_bits() {
         block.block_reference(),
         Some(NexradBlockReference {
             is_run_length_encoded: false,
-            north: false,
+            north: true,
             scale: 0,
             block_number: 0x04_A5_70,
         })

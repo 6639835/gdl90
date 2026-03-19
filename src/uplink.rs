@@ -1257,7 +1257,10 @@ impl NexradBlockReference {
     pub fn from_raw(raw: [u8; 3]) -> Self {
         Self {
             is_run_length_encoded: (raw[0] & 0x80) != 0,
-            north: (raw[0] & 0x40) != 0,
+            // The Garmin ICD's worked example decodes 0x84_A5_70 as a North-hemisphere
+            // block, which means this hemisphere bit is inverted from the intuitive
+            // "set means north" interpretation.
+            north: (raw[0] & 0x40) == 0,
             scale: (raw[0] >> 4) & 0x03,
             block_number: (((raw[0] & 0x0F) as u32) << 16) | ((raw[1] as u32) << 8) | raw[2] as u32,
         }
@@ -1268,7 +1271,7 @@ impl NexradBlockReference {
         if self.is_run_length_encoded {
             first |= 0x80;
         }
-        if self.north {
+        if !self.north {
             first |= 0x40;
         }
         [

@@ -177,7 +177,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             section: "5.1",
             title: "NEXRAD Global Block Representation",
             state: SupportState::Partial,
-            notes: "Run-length payloads, typed intensity semantics from Table 20, and EASA-backed block-reference element/N-S/scale/block-number parsing are implemented; exact geo semantics remain external-spec dependent.",
+            notes: "Run-length payloads, typed intensity semantics from Table 20, and Garmin-ICD-aligned block-reference element/N-S/scale/block-number parsing are implemented; exact geo semantics remain external-spec dependent.",
         },
         SectionSupportEntry {
             section: "5.2",

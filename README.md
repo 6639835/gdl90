@@ -80,7 +80,7 @@ The Garmin ICD explicitly defers some nested payload details to RTCA documents a
 
 - The 8-byte UAT-specific header is preserved as typed raw bytes because the provided Garmin text references DO-282 for its internal bit layout.
 - Basic and Long ADS-B pass-through payloads are structurally segmented into their documented header/state/mode/aux sections, but the bit-level decoding of those inner fields still requires DO-282.
-- NEXRAD block references are parsed into the EASA-backed element, hemisphere, scale, and block-number fields, but the exact geographic meaning of those values is still external-spec dependent.
+- NEXRAD block references are parsed into typed element, hemisphere, scale, and block-number fields, aligned with the Garmin ICD sample data, but the exact geographic meaning of those values is still external-spec dependent.
 - NEXRAD payload shapes from the Garmin sample data that are not fully specified in the document are preserved raw rather than guessed.
 
 Everything else above is fully encoded and decoded from the provided specs.
