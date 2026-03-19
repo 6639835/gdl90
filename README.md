@@ -1,11 +1,14 @@
 # gdl90
 
-Rust library and CLI for working with the GDL90 protocol, ForeFlight GDL90 extension messages, and Garmin GDL90 control-panel ASCII messages.
+Rust library and CLI for encoding, decoding, transporting, recording, and analyzing GDL90 traffic, including ForeFlight extension messages, Garmin control-panel ASCII messages, and documented UAT uplink payloads.
 
-## What this crate covers
+## What the crate currently includes
 
-- HDLC-style GDL90 framing with CRC-CCITT FCS validation and byte stuffing
-- Standard GDL90 message encode/decode
+- HDLC-style GDL90 framing
+  - byte stuffing and unstuffing
+  - CRC-CCITT/FCS generation and validation
+  - frame and stream decoders
+- Standard GDL90 message support
   - Heartbeat
   - Initialization
   - Uplink Data
@@ -15,29 +18,37 @@ Rust library and CLI for working with the GDL90 protocol, ForeFlight GDL90 exten
   - Long Report
   - Height Above Terrain
   - Ownship Geometric Altitude
-- ForeFlight extension message encode/decode
+  - pass-through ADS-B inner field decoding for basic and long reports
+- ForeFlight support
   - ID message (`0x65/0x00`)
   - AHRS message (`0x65/0x01`)
-  - ForeFlight discovery announcement parsing
-  - ForeFlight-valid UDP datagram encoding and sending
-- Garmin control-panel ASCII message encode/decode
+  - discovery announcement parsing
+  - UDP send/receive helpers using ForeFlight's documented ports
+  - ForeFlight-compatible multi-message UDP datagram encoding
+- Garmin control-panel ASCII message support
   - Call Sign
   - Mode
   - VFR Code
-- Session tooling for recorded UDP datagrams
-  - read, write, append, replay, and decode session files
+- UAT uplink parsing and encoding for the documented structures
+  - information frames
+  - APDU headers, optional time metadata, and segmentation metadata
+  - Generic Text APDUs, record packing, and DLAC encode/decode
+  - NEXRAD APDUs and block payloads
+  - named-but-raw preservation for additional FIS-B product IDs
+- Session tooling
+  - read, write, and append recorded UDP datagram files
+  - decode, validate, report, capture, and replay session traffic
 - Analysis and reporting
   - per-session summaries
-  - validation of recorded datagrams
+  - datagram validation with issue reporting
   - detailed text and JSON reports
 - Support/status helpers
-  - section coverage matrix
-  - RS-422 and control-panel serial interface profiles
-- UAT uplink parsing for the documented outer structures
-  - Information Frames
-  - typed APDU headers
-  - Generic Text APDUs
-  - NEXRAD block payloads
+  - Garmin ICD section coverage matrix
+  - RS-422 bus profile and connector mapping
+  - control-panel serial profiles and connector mapping
+- Bandwidth scheduling helpers
+  - byte-budget calculation
+  - message prioritization across heartbeat, ownship, traffic, and uplinks
 
 ## Project layout
 
@@ -45,15 +56,15 @@ Rust library and CLI for working with the GDL90 protocol, ForeFlight GDL90 exten
 src/
   lib.rs          Public exports
   frame.rs        Framing, escaping, CRC/FCS, and stream decoding
-  message.rs      Standard GDL90 messages
-  foreflight.rs   ForeFlight extension messages
+  message.rs      Standard GDL90 messages and pass-through ADS-B payloads
+  foreflight.rs   ForeFlight extension messages and datagram encoding
   control.rs      Garmin control-panel ASCII messages
   uplink.rs       UAT uplink payloads, APDUs, DLAC text, and NEXRAD blocks
   transport.rs    UDP send/receive helpers and ForeFlight discovery helpers
-  session.rs      Recorded datagram file parsing and replay helpers
+  session.rs      Recorded datagram parsing, writing, and replay helpers
   analysis.rs     Session summary and validation helpers
   report.rs       Detailed text and JSON reporting
-  support.rs      Protocol support matrix and interface profiles
+  support.rs      ICD support matrix and interface profiles
   bandwidth.rs    Bandwidth-budget scheduling helpers
   util.rs         Internal shared codecs and helpers
   error.rs        Shared error type
@@ -71,11 +82,11 @@ tests/
 ## Quick start
 
 ```rust
+use gdl90::{Heartbeat, HeartbeatStatus, Message};
 use gdl90::frame::decode_frame;
-use gdl90::message::{Heartbeat, Message};
 
 let heartbeat = Message::Heartbeat(Heartbeat {
-    status: gdl90::HeartbeatStatus {
+    status: HeartbeatStatus {
         gps_position_valid: true,
         maintenance_required: false,
         ident: false,
@@ -95,8 +106,20 @@ let heartbeat = Message::Heartbeat(Heartbeat {
 let frame = heartbeat.encode_frame().unwrap();
 let clear = decode_frame(&frame).unwrap();
 let decoded = Message::decode(&clear).unwrap();
+
 assert_eq!(decoded, heartbeat);
 ```
+
+The library is split into focused modules:
+
+- `gdl90::frame` for raw framing and stream decoding
+- `gdl90::message` for standard GDL90 messages
+- `gdl90::foreflight` for ForeFlight extensions
+- `gdl90::control` for Garmin control-panel ASCII messages
+- `gdl90::uplink` for UAT uplink and APDU parsing
+- `gdl90::transport` for UDP discovery, send, and receive helpers
+- `gdl90::session`, `analysis`, and `report` for recorded datagram workflows
+- `gdl90::support` and `bandwidth` for implementation status and scheduling helpers
 
 ## Examples
 
@@ -146,10 +169,12 @@ cargo run --bin gdl90 -- support-status --missing
 cargo run --bin gdl90 -- interface-profiles
 ```
 
-Network-oriented commands default to ForeFlight's documented UDP ports when no bind address is provided:
+Defaults for network-oriented commands:
 
-- discovery: `63093`
-- GDL90 traffic: `4000`
+- ForeFlight discovery bind port: `63093`
+- GDL90 traffic bind port: `4000`
+- `capture` keeps running until interrupted when `count` is omitted or `0`
+- `report-file-json` prints JSON to stdout when `output-file` is omitted
 
 ## Session file format
 
@@ -177,16 +202,15 @@ cargo test
 
 ## Current limits
 
-This crate implements the documented outer protocol shapes, but a few inner payload details still depend on external material not present in this repository:
+Most of the Garmin ICD surface implemented in this repository is marked complete by the built-in support matrix. The remaining gaps are concentrated in uplink product internals that depend on material outside this repository.
 
-- bit-level decoding of pass-through ADS-B state/mode/auxiliary payload fields still depends on RTCA `DO-282`
-- the 8-byte UAT-specific uplink header bit layout is still treated as raw structured bytes for the same reason
-- optional APDU product-descriptor fields and full linked-product reassembly are not implemented
-- additional FIS-B product-specific decoding still depends on external FAA product definitions
-- exhaustive DLAC Appendix K behavior is not guaranteed beyond the currently implemented mappings
-- exact NEXRAD geographic interpretation remains external-spec dependent
+- APDU product-descriptor option fields are still externally specified and are not fully modeled
+- full linked or segmented FIS-B product reassembly is not implemented
+- Generic Text support covers the implemented mappings and the verified Appendix K pipe-character correction, but exact full Appendix K behavior is not guaranteed
+- Generic Text and NEXRAD products are payload-decoded; other FAA/SBS registry products are identified and preserved raw rather than fully decoded
+- future or ancillary UAT/FIS-B products still depend on external RTCA or FAA definitions
 
-The built-in support matrix is available from:
+Inspect the built-in support matrix with:
 
 ```bash
 cargo run --bin gdl90 -- support-status
