@@ -220,14 +220,15 @@ impl ForeFlightIdMessage {
         let capabilities = ForeFlightCapabilities::from_raw(u32::from_be_bytes(
             payload[35..39].try_into().unwrap(),
         ));
-
-        Ok(Self {
+        let message = Self {
             version,
             device_serial_number,
             device_name,
             device_long_name,
             capabilities,
-        })
+        };
+        message.validate()?;
+        Ok(message)
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {

@@ -107,6 +107,18 @@ impl UatUplinkPayload {
 
             let reserved = (second >> 4) & 0x07;
             let frame_type = FrameType::from_raw(second & 0x0F);
+            if reserved != 0 {
+                return Err(Gdl90Error::InvalidField {
+                    field: "I-Frame reserved bits",
+                    details: format!("frame starting at byte {offset} has non-zero reserved bits"),
+                });
+            }
+            if matches!(frame_type, FrameType::Reserved(_)) {
+                return Err(Gdl90Error::InvalidField {
+                    field: "I-Frame frame type",
+                    details: format!("frame starting at byte {offset} uses a reserved frame type"),
+                });
+            }
             let data = self.application_data[offset + 2..offset + total].to_vec();
 
             frames.push(InformationFrame {

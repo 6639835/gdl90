@@ -59,8 +59,32 @@ impl Heartbeat {
 
         let status1 = payload[1];
         let status2 = payload[2];
+        if (status1 & 0x02) != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "heartbeat reserved status bit",
+                details: "status byte 1 bit 1 must be zero".to_string(),
+            });
+        }
+        if (status2 & 0x1E) != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "heartbeat reserved status bit",
+                details: "status byte 2 bits 4..1 must be zero".to_string(),
+            });
+        }
+        if (payload[5] & 0x04) != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "heartbeat reserved message count bit",
+                details: "message count byte bit 2 must be zero".to_string(),
+            });
+        }
         let timestamp =
             (((status2 >> 7) as u32) << 16) | ((payload[4] as u32) << 8) | payload[3] as u32;
+        if timestamp >= SECONDS_PER_DAY {
+            return Err(Gdl90Error::InvalidField {
+                field: "heartbeat timestamp",
+                details: "must be seconds since UTC midnight in the range 0..=86399".to_string(),
+            });
+        }
         let uplink_count = payload[5] >> 3;
         let basic_and_long_count = (((payload[5] & 0x03) as u16) << 8) | payload[6] as u16;
 
@@ -149,6 +173,18 @@ impl Initialization {
                 actual: payload.len(),
             });
         }
+        if (payload[1] & 0xBC) != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "initialization reserved bit",
+                details: "configuration byte 1 reserved bits must be zero".to_string(),
+            });
+        }
+        if (payload[2] & 0xFC) != 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "initialization reserved bit",
+                details: "configuration byte 2 reserved bits must be zero".to_string(),
+            });
+        }
         Ok(Self {
             audio_test: (payload[1] & 0x40) != 0,
             audio_inhibit: (payload[1] & 0x02) != 0,
@@ -186,6 +222,12 @@ impl UplinkData {
         }
         let tor = read_le_u24(&payload[1..4]);
         let payload = UatUplinkPayload::from_bytes(&payload[4..])?;
+        if tor != 0xFF_FFFF && tor > MAX_TIME_OF_RECEPTION_TICKS {
+            return Err(Gdl90Error::InvalidField {
+                field: "time of reception",
+                details: "must be in the range 0..=12499999 or 0xFFFFFF when invalid".to_string(),
+            });
+        }
         Ok(Self {
             time_of_reception: if tor == 0xFF_FFFF { None } else { Some(tor) },
             payload,
@@ -368,12 +410,28 @@ impl TargetReport {
         }
 
         let alert_status = TargetAlertStatus::from_raw(payload[1] >> 4);
+        alert_status.validate_for_encoding()?;
         let address_type = AddressType::from_raw(payload[1] & 0x0F);
+        address_type.validate_for_encoding()?;
         let participant_address =
             ((payload[2] as u32) << 16) | ((payload[3] as u32) << 8) | payload[4] as u32;
 
         let latitude_raw = read_be_i24(&payload[5..8]);
         let longitude_raw = read_be_i24(&payload[8..11]);
+        let latitude_degrees = lat_lon_to_degrees(latitude_raw);
+        if !(-90.0..=90.0).contains(&latitude_degrees) {
+            return Err(Gdl90Error::InvalidField {
+                field: "latitude",
+                details: format!("{latitude_degrees} is outside [-90, 90]"),
+            });
+        }
+        let longitude_degrees = lat_lon_to_degrees(longitude_raw);
+        if !(-180.0..=179.999_978_542_327_88).contains(&longitude_degrees) {
+            return Err(Gdl90Error::InvalidField {
+                field: "longitude",
+                details: format!("{longitude_degrees} is outside [-180, 179.99997854232788]"),
+            });
+        }
         let altitude_raw = ((payload[11] as u16) << 4) | ((payload[12] as u16) >> 4);
         let pressure_altitude_feet = if altitude_raw == 0x0FFF {
             None
@@ -384,6 +442,12 @@ impl TargetReport {
         let misc_raw = payload[12] & 0x0F;
         let nic = payload[13] >> 4;
         let nacp = payload[13] & 0x0F;
+        if nic > 11 || nacp > 11 {
+            return Err(Gdl90Error::InvalidField {
+                field: "NIC/NACp",
+                details: "documented NIC/NACp values are 0..=11".to_string(),
+            });
+        }
 
         let horizontal_raw = ((payload[14] as u16) << 4) | ((payload[15] as u16) >> 4);
         let horizontal_velocity_knots = if horizontal_raw == 0x0FFF {
@@ -393,7 +457,7 @@ impl TargetReport {
         };
 
         let vertical_raw = (((payload[15] & 0x0F) as u16) << 8) | payload[16] as u16;
-        let vertical_velocity_fpm = decode_vertical_velocity(vertical_raw);
+        let vertical_velocity_fpm = decode_vertical_velocity(vertical_raw)?;
 
         let track_type = TrackType::from_raw(misc_raw);
         let track_heading = if matches!(track_type, TrackType::NotValid) {
@@ -409,8 +473,8 @@ impl TargetReport {
             alert_status,
             address_type,
             participant_address,
-            latitude_degrees: lat_lon_to_degrees(latitude_raw),
-            longitude_degrees: lat_lon_to_degrees(longitude_raw),
+            latitude_degrees,
+            longitude_degrees,
             pressure_altitude_feet,
             misc: TargetMisc {
                 airborne: (misc_raw & 0x08) != 0,
@@ -422,10 +486,39 @@ impl TargetReport {
             horizontal_velocity_knots,
             vertical_velocity_fpm,
             track_heading,
-            emitter_category: payload[18],
-            call_sign: decode_callsign(&call_sign_bytes),
-            emergency_priority_code: payload[27] >> 4,
-            spare: payload[27] & 0x0F,
+            emitter_category: {
+                let emitter = payload[18];
+                if emitter >= 22 {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "emitter category",
+                        details: "reserved or out-of-range categories 22..=255 are not valid"
+                            .to_string(),
+                    });
+                }
+                emitter
+            },
+            call_sign: decode_callsign(&call_sign_bytes)?,
+            emergency_priority_code: {
+                let emergency = payload[27] >> 4;
+                if emergency > 6 {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "emergency priority code",
+                        details: "reserved values 7..=15 are not valid for transmitted reports"
+                            .to_string(),
+                    });
+                }
+                emergency
+            },
+            spare: {
+                let spare = payload[27] & 0x0F;
+                if spare != 0 {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "traffic report spare",
+                        details: "reserved spare nibble must be zero".to_string(),
+                    });
+                }
+                spare
+            },
         })
     }
 
@@ -748,6 +841,12 @@ impl<const N: usize> PassThroughReport<N> {
             });
         }
         let tor = read_le_u24(&payload[1..4]);
+        if tor != 0xFF_FFFF && tor > MAX_TIME_OF_RECEPTION_TICKS {
+            return Err(Gdl90Error::InvalidField {
+                field: "time of reception",
+                details: "must be in the range 0..=12499999 or 0xFFFFFF when invalid".to_string(),
+            });
+        }
         let mut data = [0u8; N];
         data.copy_from_slice(&payload[4..]);
         Ok(Self {
@@ -1122,15 +1221,18 @@ impl FrameMessageDecoder {
     }
 }
 
-fn decode_vertical_velocity(raw: u16) -> Option<i16> {
+fn decode_vertical_velocity(raw: u16) -> Result<Option<i16>> {
     match raw {
-        0x0800 => None,
-        0x0000..=0x01FE => Some((raw as i16) * 64),
+        0x0800 => Ok(None),
+        0x0000..=0x01FE => Ok(Some((raw as i16) * 64)),
         0x0E02..=0x0FFF => {
             let signed = ((raw as i16) << 4) >> 4;
-            Some(signed * 64)
+            Ok(Some(signed * 64))
         }
-        _ => None,
+        _ => Err(Gdl90Error::InvalidField {
+            field: "vertical velocity",
+            details: format!("raw value {raw:#05x} is reserved or unused"),
+        }),
     }
 }
 

@@ -96,13 +96,22 @@ pub(crate) fn encode_callsign(value: &str) -> Result<[u8; 8]> {
     Ok(out)
 }
 
-pub(crate) fn decode_callsign(bytes: &[u8; 8]) -> String {
+pub(crate) fn decode_callsign(bytes: &[u8; 8]) -> Result<String> {
+    for byte in bytes {
+        if !matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b' ' | b'-') {
+            return Err(Gdl90Error::InvalidField {
+                field: "call sign",
+                details: format!("byte {byte:#04x} is not permitted"),
+            });
+        }
+    }
+
     let end = bytes
         .iter()
         .rposition(|byte| *byte != b' ')
         .map(|index| index + 1)
         .unwrap_or(0);
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
+    Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
 }
 
 pub(crate) fn encode_ascii_digits(

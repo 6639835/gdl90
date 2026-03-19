@@ -83,6 +83,27 @@ fn heartbeat_spec_frame_decodes_and_reencodes() {
 }
 
 #[test]
+fn heartbeat_decode_rejects_reserved_bits_and_out_of_range_timestamp() {
+    let reserved_bit = Message::decode(&[0x00, 0x83, 0x01, 0x00, 0x00, 0x00, 0x00]).unwrap_err();
+    assert!(
+        matches!(reserved_bit, gdl90::Gdl90Error::InvalidField { field, .. } if field == "heartbeat reserved status bit")
+    );
+
+    let bad_timestamp = Message::decode(&[0x00, 0x81, 0x81, 0x80, 0x51, 0x00, 0x00]).unwrap_err();
+    assert!(
+        matches!(bad_timestamp, gdl90::Gdl90Error::InvalidField { field, .. } if field == "heartbeat timestamp")
+    );
+}
+
+#[test]
+fn initialization_decode_rejects_reserved_bits() {
+    let error = Message::decode(&[0x02, 0x80, 0x00]).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "initialization reserved bit")
+    );
+}
+
+#[test]
 fn traffic_report_spec_example_round_trips() {
     let bytes = [
         0x14, 0x00, 0xAB, 0x45, 0x49, 0x1F, 0xEF, 0x15, 0xA8, 0x89, 0x78, 0x0F, 0x09, 0xA9, 0x07,
@@ -237,6 +258,56 @@ fn traffic_report_encode_rejects_reserved_and_inconsistent_documented_values() {
 }
 
 #[test]
+fn traffic_report_decode_rejects_reserved_and_invalid_documented_values() {
+    let mut bytes = [
+        0x14, 0x00, 0xAB, 0x45, 0x49, 0x1F, 0xEF, 0x15, 0xA8, 0x89, 0x78, 0x0F, 0x09, 0xA9, 0x07,
+        0xB0, 0x01, 0x20, 0x01, 0x4E, 0x38, 0x32, 0x35, 0x56, 0x20, 0x20, 0x20, 0x00,
+    ];
+
+    bytes[1] = 0x20;
+    let error = Message::decode(&bytes).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "traffic alert status")
+    );
+
+    let mut bytes = [
+        0x14, 0x00, 0xAB, 0x45, 0x49, 0x1F, 0xEF, 0x15, 0xA8, 0x89, 0x78, 0x0F, 0x09, 0xA9, 0x07,
+        0xB0, 0x01, 0x20, 0x01, 0x4E, 0x38, 0x32, 0x35, 0x56, 0x20, 0x20, 0x20, 0x00,
+    ];
+    bytes[13] = 0xC9;
+    let error = Message::decode(&bytes).unwrap_err();
+    assert!(matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "NIC/NACp"));
+
+    let bytes = [
+        0x14, 0x00, 0xAB, 0x45, 0x49, 0x1F, 0xEF, 0x15, 0xA8, 0x89, 0x78, 0x0F, 0x09, 0xA9, 0x07,
+        0xB0, 0x7F, 0x20, 0x01, 0x4E, 0x38, 0x32, 0x35, 0x56, 0x20, 0x20, 0x20, 0x00,
+    ];
+    let mut bytes = bytes;
+    bytes[15] = 0xB1;
+    bytes[16] = 0xFF;
+    let error = Message::decode(&bytes).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "vertical velocity")
+    );
+
+    let bytes = [
+        0x14, 0x00, 0xAB, 0x45, 0x49, 0x1F, 0xEF, 0x15, 0xA8, 0x89, 0x78, 0x0F, 0x09, 0xA9, 0x07,
+        0xB0, 0x01, 0x20, 0x16, 0x4E, 0x38, 0x32, 0x35, 0x56, 0x20, 0x20, 0x20, 0x00,
+    ];
+    let error = Message::decode(&bytes).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "emitter category")
+    );
+
+    let bytes = [
+        0x14, 0x00, 0xAB, 0x45, 0x49, 0x1F, 0xEF, 0x15, 0xA8, 0x89, 0x78, 0x0F, 0x09, 0xA9, 0x07,
+        0xB0, 0x01, 0x20, 0x01, 0x2A, 0x38, 0x32, 0x35, 0x56, 0x20, 0x20, 0x20, 0x00,
+    ];
+    let error = Message::decode(&bytes).unwrap_err();
+    assert!(matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "call sign"));
+}
+
+#[test]
 fn framed_stream_decoder_handles_back_to_back_messages() {
     let heartbeat = Message::Heartbeat(Heartbeat {
         status: HeartbeatStatus {
@@ -308,6 +379,35 @@ fn foreflight_messages_round_trip() {
     assert_eq!(
         Message::decode(&ahrs_message.encode().unwrap()).unwrap(),
         ahrs_message
+    );
+}
+
+#[test]
+fn foreflight_id_decode_rejects_invalid_version_and_reserved_capabilities() {
+    let mut invalid_version = Message::ForeFlightId(ForeFlightIdMessage {
+        version: 1,
+        device_serial_number: Some(0x1122_3344_5566_7788),
+        device_name: "GDL90".to_string(),
+        device_long_name: "Rust ForeFlight".to_string(),
+        capabilities: ForeFlightCapabilities {
+            geometric_altitude_datum: GeometricAltitudeDatum::MeanSeaLevel,
+            internet_policy: InternetPolicy::Expensive,
+            reserved_bits: 0,
+        },
+    })
+    .encode()
+    .unwrap();
+    invalid_version[2] = 0x02;
+    let error = Message::decode(&invalid_version).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "ForeFlight ID version")
+    );
+
+    invalid_version[2] = 0x01;
+    invalid_version[38] = 0x08;
+    let error = Message::decode(&invalid_version).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "ForeFlight capabilities reserved bits")
     );
 }
 
@@ -823,6 +923,16 @@ fn heartbeat_and_uplink_time_fields_reject_values_outside_documented_ranges() {
     assert!(
         matches!(basic, gdl90::Gdl90Error::InvalidField { field, .. } if field == "time of reception")
     );
+
+    let decode_uplink = Message::decode(&{
+        let mut bytes = vec![0x07, 0x20, 0xBC, 0xBE];
+        bytes.extend_from_slice(&[0u8; 432]);
+        bytes
+    })
+    .unwrap_err();
+    assert!(
+        matches!(decode_uplink, gdl90::Gdl90Error::InvalidField { field, .. } if field == "time of reception")
+    );
 }
 
 #[test]
@@ -1040,6 +1150,18 @@ fn information_frame_encoding_rejects_reserved_bits_and_reserved_frame_types() {
     .unwrap_err();
     assert!(
         matches!(reserved_type, gdl90::Gdl90Error::InvalidField { field, .. } if field == "I-Frame frame type")
+    );
+
+    let mut application_data = [0u8; 424];
+    application_data[0] = 0x00;
+    application_data[1] = 0x90;
+    let payload = UatUplinkPayload {
+        header: [0u8; 8],
+        application_data,
+    };
+    let error = payload.information_frames().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "I-Frame reserved bits")
     );
 }
 
