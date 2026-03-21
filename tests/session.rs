@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use gdl90::Gdl90Error;
 use gdl90::message::{
     Heartbeat, HeartbeatStatus, Message, OwnshipGeometricAltitude, VerticalFigureOfMerit,
 };
@@ -81,4 +82,31 @@ fn parse_rejects_invalid_lines() {
     assert!(
         matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "datagram delay")
     );
+}
+
+#[test]
+fn parse_accepts_flexible_hex_delimiters_and_read_reports_line_numbers() {
+    let parsed = parse_datagram_line("@15 7E:00-01 7E").unwrap().unwrap();
+    assert_eq!(parsed.delay_ms, Some(15));
+    assert_eq!(parsed.bytes, vec![0x7E, 0x00, 0x01, 0x7E]);
+
+    let path = std::env::temp_dir().join(format!(
+        "gdl90-invalid-session-{}.txt",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+
+    std::fs::write(&path, "# comment\n@15 7E:00-01-7E\nGG\n").unwrap();
+    let error = read_datagram_file(&path).unwrap_err();
+    assert!(matches!(
+        error,
+        Gdl90Error::InvalidField { field, details }
+            if field == "datagram file line"
+                && details.contains("line 3")
+                && details.contains("invalid hex byte")
+    ));
+
+    let _ = std::fs::remove_file(path);
 }
