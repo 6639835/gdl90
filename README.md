@@ -30,7 +30,7 @@ Rust library and CLI for encoding, decoding, transporting, recording, and analyz
   - Mode
   - VFR Code
 - UAT uplink parsing and encoding for the documented structures
-  - information frames
+  - Rev A information frames
   - APDU headers, optional time metadata, and segmentation metadata
   - Generic Text APDUs, record packing, and DLAC encode/decode
   - NEXRAD APDUs and block payloads
@@ -204,10 +204,11 @@ cargo test
 
 Most of the Garmin ICD surface implemented in this repository is marked complete by the built-in support matrix. The remaining gaps are concentrated in uplink product internals that depend on material outside this repository.
 
+- I-Frame type handling is strict to Garmin Rev A Table 18: `0x0` is FIS-B APDU, `0xF` is developmental, and `0x1..=0xE` are reserved
 - APDU product-descriptor option fields are still externally specified and are not fully modeled
 - full linked or segmented FIS-B product reassembly is not implemented
 - Generic Text support covers the implemented mappings and the verified Appendix K pipe-character correction, but exact full Appendix K behavior is not guaranteed
-- Generic Text and NEXRAD products are payload-decoded; other FAA/SBS registry products are identified and preserved raw rather than fully decoded
+- Generic Text and NEXRAD products are payload-decoded; other FAA/FIS-B registry products are identified and preserved raw rather than fully decoded
 - future or ancillary UAT/FIS-B products still depend on external RTCA or FAA definitions
 
 Inspect the built-in support matrix with:

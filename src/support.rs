@@ -242,7 +242,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "3.1",
             "Heartbeat Message",
             SupportState::Complete,
-            "Heartbeat encode/decode covers status bytes, 17-bit UTC timestamp, and message counters.",
+            "Heartbeat encode/decode covers status bytes, the mandatory UAT-initialized bit, 17-bit UTC timestamp, and message counters.",
         ),
         support_entry(
             "3.1.1",
@@ -266,7 +266,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "3.1.4",
             "Received Message Counts",
             SupportState::Complete,
-            "Uplink and Basic/Long message counters are encoded and decoded with the documented bit packing and limits.",
+            "Uplink and Basic/Long message counters are encoded and decoded with the documented bit packing, limits, and Basic/Long saturation behavior.",
         ),
         support_entry(
             "3.2",
@@ -290,7 +290,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "3.3",
             "Uplink Data Message",
             SupportState::Complete,
-            "Uplink Data encode/decode covers TOR handling and the full 432-byte uplink payload container.",
+            "Uplink Data encode/decode covers TOR handling, the valid-application-data requirement, and the full 432-byte uplink payload container.",
         ),
         support_entry(
             "3.3.1",
@@ -332,7 +332,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "3.6",
             "Pass-Through Reports",
             SupportState::Complete,
-            "Basic and Long payloads decode into typed UAT header, state-vector, mode-status, and auxiliary-state-vector fields while preserving the original raw bytes.",
+            "Basic and Long payloads validate the matching UAT payload type and decode into typed UAT header, state-vector, mode-status, and auxiliary-state-vector fields while preserving the original raw bytes.",
         ),
         support_entry(
             "3.7",
@@ -344,7 +344,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "3.8",
             "Ownship Geometric Altitude Message",
             SupportState::Complete,
-            "Ownship geometric altitude encode/decode covers 5-foot signed altitude, vertical warning, VFOM, and compatibility with the supplied ForeFlight sentinel typo.",
+            "Ownship geometric altitude encode/decode covers 5-foot signed altitude, vertical warning, and the Rev A VFOM sentinels.",
         ),
         support_entry(
             "4",
@@ -392,13 +392,13 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "4.2.3",
             "Frame Type Field",
             SupportState::Complete,
-            "Frame-type parsing and encoding for FIS-B APDUs, developmental frames, and reserved values are implemented.",
+            "Frame-type parsing and encoding follows Rev A Table 18: FIS-B APDU, developmental, and reserved frame types.",
         ),
         support_entry(
             "4.2.4",
             "Frame Data Field",
             SupportState::Complete,
-            "Frame data is exposed as APDU payloads or raw developmental/reserved frame data, as documented.",
+            "Frame data is exposed as APDU payloads or raw developmental frame data; Rev A reserved frame types are rejected.",
         ),
         support_entry(
             "4.3",
@@ -500,7 +500,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "5.2.3",
             "METAR / TAF Composition",
             SupportState::Complete,
-            "METAR/TAF token structure, qualifiers, NIL handling, and whole-record validation are implemented.",
+            "METAR/TAF token structure, qualifiers, NIL handling, non-empty report text, and whole-record validation are implemented.",
         ),
         support_entry(
             "5.2.4",

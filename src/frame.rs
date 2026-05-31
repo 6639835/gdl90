@@ -114,20 +114,32 @@ impl FrameDecoder {
                         Err(error) => {
                             frames.push(Err(error));
                             self.buffer.clear();
-                            self.collecting = true;
+                            self.collecting = false;
                             continue;
                         }
                     }));
+                    self.collecting = false;
                 } else {
                     self.buffer.clear();
+                    self.collecting = true;
                 }
-                self.collecting = true;
             } else if self.collecting {
                 self.buffer.push(*byte);
             }
         }
 
         frames
+    }
+
+    pub fn finish(&mut self) -> Option<Result<Vec<u8>>> {
+        if self.collecting && !self.buffer.is_empty() {
+            self.collecting = false;
+            self.buffer.clear();
+            Some(Err(Gdl90Error::FrameTooShort))
+        } else {
+            self.reset();
+            None
+        }
     }
 
     pub fn reset(&mut self) {

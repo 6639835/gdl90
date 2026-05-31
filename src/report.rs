@@ -51,7 +51,10 @@ pub fn build_session_report(datagrams: &[RecordedDatagram]) -> SessionReport {
 
     for (datagram_index, datagram) in datagrams.iter().enumerate() {
         let mut decoder = FrameDecoder::new();
-        let frame_results = decoder.push(&datagram.bytes);
+        let mut frame_results = decoder.push(&datagram.bytes);
+        if let Some(result) = decoder.finish() {
+            frame_results.push(result);
+        }
         let mut frames = Vec::with_capacity(frame_results.len());
 
         for (frame_index, frame_result) in frame_results.into_iter().enumerate() {

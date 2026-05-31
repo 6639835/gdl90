@@ -14,7 +14,11 @@ pub struct RecordedDatagram {
 impl RecordedDatagram {
     pub fn decode_messages(&self) -> Vec<Result<Message>> {
         let mut decoder = FrameMessageDecoder::new();
-        decoder.push(&self.bytes)
+        let mut messages = decoder.push(&self.bytes);
+        if let Some(result) = decoder.finish() {
+            messages.push(result);
+        }
+        messages
     }
 
     pub fn to_line(&self) -> String {

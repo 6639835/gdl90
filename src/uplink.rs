@@ -343,8 +343,6 @@ impl UatUplinkPayload {
 pub enum FrameType {
     FisBApdu,
     Developmental,
-    CurrentReportList,
-    ServiceStatus,
     Reserved(u8),
 }
 
@@ -352,11 +350,7 @@ impl FrameType {
     pub fn from_raw(value: u8) -> Self {
         match value {
             0x0 => Self::FisBApdu,
-            // FAA-E-3006 Rev. B updates the later UAT uplink frame-type assignments
-            // beyond the older Garmin ICD.
-            0x1 => Self::Developmental,
-            0xE => Self::CurrentReportList,
-            0xF => Self::ServiceStatus,
+            0xF => Self::Developmental,
             other => Self::Reserved(other),
         }
     }
@@ -364,9 +358,7 @@ impl FrameType {
     pub fn raw(self) -> u8 {
         match self {
             Self::FisBApdu => 0x0,
-            Self::Developmental => 0x1,
-            Self::CurrentReportList => 0xE,
-            Self::ServiceStatus => 0xF,
+            Self::Developmental => 0xF,
             Self::Reserved(value) => value & 0x0F,
         }
     }
@@ -412,56 +404,6 @@ impl InformationFrame {
             reserved: 0,
             frame_type: FrameType::FisBApdu,
             data: apdu.encode()?,
-        })
-    }
-
-    pub fn current_report_list(&self) -> Result<CurrentReportList> {
-        if self.frame_type != FrameType::CurrentReportList {
-            return Err(Gdl90Error::InvalidField {
-                field: "frame type",
-                details: "frame does not contain a Current Report List".to_string(),
-            });
-        }
-        CurrentReportList::decode(&self.data)
-    }
-
-    pub fn from_current_report_list(crl: &CurrentReportList) -> Result<Self> {
-        Ok(Self {
-            reserved: 0,
-            frame_type: FrameType::CurrentReportList,
-            data: crl.encode()?,
-        })
-    }
-
-    pub fn service_status(&self) -> Result<Vec<ServiceStatusSignal>> {
-        if self.frame_type != FrameType::ServiceStatus {
-            return Err(Gdl90Error::InvalidField {
-                field: "frame type",
-                details: "frame does not contain TIS-B / ADS-R service status".to_string(),
-            });
-        }
-
-        let chunks = self.data.chunks_exact(ServiceStatusSignal::LEN);
-        if !chunks.remainder().is_empty() {
-            return Err(Gdl90Error::InvalidLength {
-                context: "TIS-B / ADS-R service status frame",
-                expected: "a multiple of 4 bytes",
-                actual: self.data.len(),
-            });
-        }
-
-        chunks.map(ServiceStatusSignal::decode).collect()
-    }
-
-    pub fn from_service_status(signals: &[ServiceStatusSignal]) -> Result<Self> {
-        let mut data = Vec::with_capacity(signals.len() * ServiceStatusSignal::LEN);
-        for signal in signals {
-            data.extend_from_slice(&signal.encode()?);
-        }
-        Ok(Self {
-            reserved: 0,
-            frame_type: FrameType::ServiceStatus,
-            data,
         })
     }
 }
@@ -753,6 +695,14 @@ impl Apdu {
         self.validate_payload_len()?;
 
         let header = self.header.encode()?;
+        let total_len = header.len() + self.payload.len();
+        if total_len > MAX_APDU_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "APDU",
+                expected: "at most 422 bytes",
+                actual: total_len,
+            });
+        }
         let mut out = Vec::with_capacity(header.len() + self.payload.len());
         out.extend_from_slice(&header);
         out.extend_from_slice(&self.payload);
@@ -1365,6 +1315,12 @@ impl GenericTextRecord {
 
         match self.kind {
             GenericTextRecordKind::Metar | GenericTextRecordKind::Taf => {
+                if self.text.is_empty() {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "generic text record text",
+                        details: "text report must contain at least one character".to_string(),
+                    });
+                }
                 if self.text.contains(DLAC_RECORD_SEPARATOR) {
                     return Err(Gdl90Error::InvalidField {
                         field: "generic text record text",
@@ -1515,6 +1471,11 @@ impl NexradBlock {
             return Ok(Self::EmptyBitmap {
                 block_reference_indicator: reference,
                 bitmap_bytes: payload[3..].to_vec(),
+            });
+        }
+        if (reference[0] & 0x80) == 0 {
+            return Ok(Self::Unparsed {
+                raw: payload.to_vec(),
             });
         }
 

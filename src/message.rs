@@ -65,6 +65,12 @@ impl Heartbeat {
                 details: "status byte 1 bit 1 must be zero".to_string(),
             });
         }
+        if (status1 & 0x01) == 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "heartbeat UAT initialized bit",
+                details: "status byte 1 bit 0 must be one".to_string(),
+            });
+        }
         if (status2 & 0x1E) != 0 {
             return Err(Gdl90Error::InvalidField {
                 field: "heartbeat reserved status bit",
@@ -120,10 +126,10 @@ impl Heartbeat {
                 details: "must fit in 5 bits".to_string(),
             });
         }
-        if self.basic_and_long_count > 0x03FF {
+        if !self.status.uat_initialized {
             return Err(Gdl90Error::InvalidField {
-                field: "heartbeat basic/long count",
-                details: "must fit in 10 bits".to_string(),
+                field: "heartbeat UAT initialized bit",
+                details: "status byte 1 bit 0 must be one".to_string(),
             });
         }
 
@@ -147,8 +153,9 @@ impl Heartbeat {
         out.push(status2);
 
         out.extend_from_slice(&(self.timestamp_seconds_since_midnight as u16).to_le_bytes());
-        out.push((self.uplink_count << 3) | ((self.basic_and_long_count >> 8) as u8 & 0x03));
-        out.push((self.basic_and_long_count & 0xFF) as u8);
+        let basic_and_long_count = self.basic_and_long_count.min(0x03FF);
+        out.push((self.uplink_count << 3) | ((basic_and_long_count >> 8) as u8 & 0x03));
+        out.push((basic_and_long_count & 0xFF) as u8);
         Ok(out)
     }
 }
@@ -228,6 +235,13 @@ impl UplinkData {
                 details: "must be in the range 0..=12499999 or 0xFFFFFF when invalid".to_string(),
             });
         }
+        if !payload.decoded_header()?.application_data_valid {
+            return Err(Gdl90Error::InvalidField {
+                field: "uplink application data valid",
+                details: "Uplink Data output must be marked as containing valid application data"
+                    .to_string(),
+            });
+        }
         Ok(Self {
             time_of_reception: if tor == 0xFF_FFFF { None } else { Some(tor) },
             payload,
@@ -243,6 +257,13 @@ impl UplinkData {
                         .to_string(),
                 });
             }
+        }
+        if !self.payload.decoded_header()?.application_data_valid {
+            return Err(Gdl90Error::InvalidField {
+                field: "uplink application data valid",
+                details: "Uplink Data output must be marked as containing valid application data"
+                    .to_string(),
+            });
         }
 
         let mut out = Vec::with_capacity(Self::LEN);
@@ -663,7 +684,7 @@ impl TargetReport {
             });
         }
         for (index, byte) in encoded.bytes().enumerate() {
-            if !matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b' ') {
+            if !matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b' ' | b'-') {
                 return Err(Gdl90Error::InvalidField {
                     field: "call sign",
                     details: format!("byte {byte:#04x} is not permitted"),
@@ -931,6 +952,12 @@ impl BasicUatPayload {
         }
 
         let header = UatAdsbPayloadHeader::decode(&payload[..4])?;
+        if !header.is_basic() {
+            return Err(Gdl90Error::InvalidField {
+                field: "Basic UAT payload type code",
+                details: "Basic Reports must contain payload type code 0".to_string(),
+            });
+        }
         let mut state_vector = [0u8; 13];
         state_vector.copy_from_slice(&payload[4..17]);
 
@@ -975,6 +1002,12 @@ impl LongUatPayload {
         }
 
         let header = UatAdsbPayloadHeader::decode(&payload[..4])?;
+        if !header.is_long_type1() {
+            return Err(Gdl90Error::InvalidField {
+                field: "Long UAT payload type code",
+                details: "Long Reports must contain payload type code 1".to_string(),
+            });
+        }
         let mut state_vector = [0u8; 13];
         state_vector.copy_from_slice(&payload[4..17]);
         let mut mode_status = [0u8; 12];
@@ -1373,10 +1406,7 @@ impl OwnshipGeometricAltitude {
             vertical_warning: (raw_metrics & 0x8000) != 0,
             vertical_figure_of_merit: match raw_metrics & 0x7FFF {
                 0x7FFF => VerticalFigureOfMerit::NotAvailable,
-                // The Garmin ICD uses 0x7FFE for the saturated VFOM sentinel, but the
-                // supplied ForeFlight extension text lists 0x7EEE. Accept both on decode
-                // so the library remains interoperable with devices following either text.
-                0x7EEE | 0x7FFE => VerticalFigureOfMerit::GreaterThan32766,
+                0x7FFE => VerticalFigureOfMerit::GreaterThan32766,
                 meters => VerticalFigureOfMerit::Meters(meters),
             },
         })
@@ -1397,7 +1427,7 @@ impl OwnshipGeometricAltitude {
             });
         }
         let vfom = match self.vertical_figure_of_merit {
-            VerticalFigureOfMerit::Meters(value) => value,
+            VerticalFigureOfMerit::Meters(value) => value.min(0x7FFE),
             VerticalFigureOfMerit::NotAvailable => 0x7FFF,
             VerticalFigureOfMerit::GreaterThan32766 => 0x7FFE,
         };
@@ -1584,6 +1614,9 @@ impl Message {
             Self::ForeFlightId(message) => message.encode(),
             Self::ForeFlightAhrs(message) => message.encode(),
             Self::Unknown { message_id, data } => {
+                if *message_id > 127 {
+                    return Err(Gdl90Error::InvalidMessageId(*message_id));
+                }
                 let mut out = Vec::with_capacity(1 + data.len());
                 out.push(*message_id);
                 out.extend_from_slice(data);
@@ -1624,6 +1657,12 @@ impl FrameMessageDecoder {
             .into_iter()
             .map(|result| result.and_then(|payload| Message::decode(&payload)))
             .collect()
+    }
+
+    pub fn finish(&mut self) -> Option<Result<Message>> {
+        self.frame_decoder
+            .finish()
+            .map(|result| result.and_then(|payload| Message::decode(&payload)))
     }
 
     pub fn reset(&mut self) {

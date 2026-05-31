@@ -90,9 +90,47 @@ fn heartbeat_decode_rejects_reserved_bits_and_out_of_range_timestamp() {
         matches!(reserved_bit, gdl90::Gdl90Error::InvalidField { field, .. } if field == "heartbeat reserved status bit")
     );
 
+    let not_initialized = Message::decode(&[0x00, 0x80, 0x01, 0x00, 0x00, 0x00, 0x00]).unwrap_err();
+    assert!(
+        matches!(not_initialized, gdl90::Gdl90Error::InvalidField { field, .. } if field == "heartbeat UAT initialized bit")
+    );
+
     let bad_timestamp = Message::decode(&[0x00, 0x81, 0x81, 0x80, 0x51, 0x00, 0x00]).unwrap_err();
     assert!(
         matches!(bad_timestamp, gdl90::Gdl90Error::InvalidField { field, .. } if field == "heartbeat timestamp")
+    );
+}
+
+#[test]
+fn heartbeat_encode_enforces_uat_initialized_and_saturates_basic_long_count() {
+    let mut heartbeat = Heartbeat {
+        status: HeartbeatStatus {
+            gps_position_valid: true,
+            maintenance_required: false,
+            ident: false,
+            address_type_talkback: false,
+            gps_battery_low: false,
+            ratcs: false,
+            uat_initialized: true,
+            csa_requested: false,
+            csa_not_available: false,
+            utc_ok: true,
+        },
+        timestamp_seconds_since_midnight: 0,
+        uplink_count: 4,
+        basic_and_long_count: 567,
+    };
+    let encoded = heartbeat.encode().unwrap();
+    assert_eq!(&encoded[5..7], &[0x22, 0x37]);
+
+    heartbeat.basic_and_long_count = 2_000;
+    let saturated = heartbeat.encode().unwrap();
+    assert_eq!(&saturated[5..7], &[0x23, 0xFF]);
+
+    heartbeat.status.uat_initialized = false;
+    let error = heartbeat.encode().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "heartbeat UAT initialized bit")
     );
 }
 
@@ -253,8 +291,9 @@ fn traffic_report_encode_rejects_reserved_and_inconsistent_documented_values() {
 
     let mut report = example_target_report();
     report.call_sign = "N12-45".to_string();
-    assert!(
-        matches!(Message::TrafficReport(report).encode(), Err(gdl90::Gdl90Error::InvalidField { field, .. }) if field == "call sign")
+    assert_eq!(
+        &Message::TrafficReport(report).encode().unwrap()[19..25],
+        b"N12-45"
     );
 }
 
@@ -345,6 +384,17 @@ fn framed_stream_decoder_handles_back_to_back_messages() {
         .collect::<Vec<_>>();
 
     assert_eq!(messages, vec![heartbeat, geo]);
+}
+
+#[test]
+fn unknown_message_encode_rejects_ids_outside_rev_a_range() {
+    let error = Message::Unknown {
+        message_id: 0x80,
+        data: vec![],
+    }
+    .encode()
+    .unwrap_err();
+    assert_eq!(error, gdl90::Gdl90Error::InvalidMessageId(0x80));
 }
 
 #[test]
@@ -447,14 +497,19 @@ fn control_messages_round_trip() {
     let call_sign = ControlMessage::CallSign(CallSignMessage {
         call_sign: "GARMIN".to_string(),
     });
+    assert_eq!(&call_sign.encode().unwrap(), b"^CS GARMIN  12\r");
     assert_eq!(
         ControlMessage::decode(&call_sign.encode().unwrap()).unwrap(),
         call_sign
     );
+    let bad_padding = b"^CS GA RMIN 12\r";
+    let error = ControlMessage::decode(bad_padding).unwrap_err();
+    assert!(matches!(error, gdl90::Gdl90Error::ControlFormat(_)));
 
     let vfr = ControlMessage::VfrCode(VfrCodeMessage {
         vfr_code: "1200".to_string(),
     });
+    assert_eq!(&vfr.encode().unwrap(), b"^VC 1200DA\r");
     assert_eq!(ControlMessage::decode(&vfr.encode().unwrap()).unwrap(), vfr);
 }
 
@@ -534,6 +589,16 @@ fn nexrad_rle_block_round_trip() {
         FisbProduct::Nexrad(_) => {}
         other => panic!("expected nexrad product, got {other:?}"),
     }
+}
+
+#[test]
+fn nexrad_does_not_classify_non_rle_reference_as_rle() {
+    let payload = [0x04, 0xA5, 0x70]
+        .into_iter()
+        .chain(std::iter::repeat(0x07).take(128))
+        .collect::<Vec<_>>();
+    let block = NexradBlock::from_payload(&payload).unwrap();
+    assert!(matches!(block, NexradBlock::Unparsed { .. }));
 }
 
 #[test]
@@ -772,6 +837,13 @@ fn apdu_supports_easa_time_variants_and_segmentation_block() {
     let (decoded, len) = ApduHeader::decode(&bytes).unwrap();
     assert_eq!(len, 9);
     assert_eq!(decoded, header_with_date_and_segmentation);
+
+    let too_large = gdl90::uplink::Apdu {
+        header: header_with_date_and_segmentation,
+        payload: vec![0; 414],
+    };
+    let error = too_large.encode().unwrap_err();
+    assert!(matches!(error, gdl90::Gdl90Error::InvalidLength { context, .. } if context == "APDU"));
 }
 
 #[test]
@@ -963,6 +1035,19 @@ fn heartbeat_and_uplink_time_fields_reject_values_outside_documented_ranges() {
         matches!(uplink, gdl90::Gdl90Error::InvalidField { field, .. } if field == "time of reception")
     );
 
+    let invalid_application_data = Message::UplinkData(UplinkData {
+        time_of_reception: Some(0),
+        payload: UatUplinkPayload {
+            header: [0u8; 8],
+            application_data: [0u8; 424],
+        },
+    })
+    .encode()
+    .unwrap_err();
+    assert!(
+        matches!(invalid_application_data, gdl90::Gdl90Error::InvalidField { field, .. } if field == "uplink application data valid")
+    );
+
     let basic = Message::BasicReport(PassThroughReport::<18> {
         time_of_reception: Some(12_500_000),
         payload: [0u8; 18],
@@ -1032,14 +1117,14 @@ fn traffic_velocity_encoding_saturates_to_documented_limits() {
 }
 
 #[test]
-fn ownship_geometric_altitude_accepts_both_supplied_vfom_sentinels_on_decode() {
+fn ownship_geometric_altitude_uses_only_garmin_rev_a_vfom_sentinels() {
     let garmin = Message::decode(&[0x0B, 0x00, 0x00, 0x7F, 0xFE]).unwrap();
-    let foreflight_text = Message::decode(&[0x0B, 0x00, 0x00, 0x7E, 0xEE]).unwrap();
+    let regular_meter_value = Message::decode(&[0x0B, 0x00, 0x00, 0x7E, 0xEE]).unwrap();
 
     let Message::OwnshipGeometricAltitude(garmin) = garmin else {
         panic!("expected ownship geometric altitude");
     };
-    let Message::OwnshipGeometricAltitude(foreflight_text) = foreflight_text else {
+    let Message::OwnshipGeometricAltitude(regular_meter_value) = regular_meter_value else {
         panic!("expected ownship geometric altitude");
     };
 
@@ -1048,13 +1133,17 @@ fn ownship_geometric_altitude_accepts_both_supplied_vfom_sentinels_on_decode() {
         VerticalFigureOfMerit::GreaterThan32766
     );
     assert_eq!(
-        foreflight_text.vertical_figure_of_merit,
-        VerticalFigureOfMerit::GreaterThan32766
+        regular_meter_value.vertical_figure_of_merit,
+        VerticalFigureOfMerit::Meters(0x7EEE)
     );
     assert_eq!(
-        Message::OwnshipGeometricAltitude(foreflight_text)
-            .encode()
-            .unwrap(),
+        Message::OwnshipGeometricAltitude(OwnshipGeometricAltitude {
+            altitude_feet: 0,
+            vertical_warning: false,
+            vertical_figure_of_merit: VerticalFigureOfMerit::Meters(40_000),
+        })
+        .encode()
+        .unwrap(),
         [0x0B, 0x00, 0x00, 0x7F, 0xFE]
     );
 }
@@ -1146,6 +1235,15 @@ fn basic_pass_through_report_exposes_inner_payload_sections() {
     assert_eq!(decoded.time_of_reception, Some(0x12_34_56));
     assert_eq!(decoded.basic_payload(), payload);
     assert_eq!(decoded.basic_payload().encode().unwrap(), report.payload);
+
+    let invalid = BasicUatPayload::decode(&[
+        0x08, 0xAB, 0xCD, 0xEF, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11, 0x11, 0x7A,
+    ])
+    .unwrap_err();
+    assert!(
+        matches!(invalid, gdl90::Gdl90Error::InvalidField { field, .. } if field == "Basic UAT payload type code")
+    );
 }
 
 #[test]
@@ -1171,6 +1269,16 @@ fn long_pass_through_report_exposes_inner_payload_sections() {
     assert_eq!(decoded.time_of_reception, None);
     assert_eq!(decoded.long_payload(), payload);
     assert_eq!(decoded.long_payload().encode().unwrap(), report.payload);
+
+    let invalid = LongUatPayload::decode(&[
+        0x00, 0x01, 0x23, 0x45, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+        0x22, 0x22, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x44,
+        0x44, 0x44, 0x44, 0x44,
+    ])
+    .unwrap_err();
+    assert!(
+        matches!(invalid, gdl90::Gdl90Error::InvalidField { field, .. } if field == "Long UAT payload type code")
+    );
 }
 
 #[test]
@@ -1312,17 +1420,16 @@ fn information_frame_encoding_rejects_reserved_bits_and_reserved_frame_types() {
 }
 
 #[test]
-fn frame_type_supports_faa_sbs_extensions() {
+fn frame_type_matches_garmin_rev_a_table_18() {
     assert_eq!(FrameType::from_raw(0x0), FrameType::FisBApdu);
-    assert_eq!(FrameType::from_raw(0x1), FrameType::Developmental);
-    assert_eq!(FrameType::from_raw(0xE), FrameType::CurrentReportList);
-    assert_eq!(FrameType::from_raw(0xF), FrameType::ServiceStatus);
-    assert_eq!(FrameType::CurrentReportList.raw(), 0xE);
-    assert_eq!(FrameType::ServiceStatus.raw(), 0xF);
+    assert_eq!(FrameType::from_raw(0x1), FrameType::Reserved(0x1));
+    assert_eq!(FrameType::from_raw(0xE), FrameType::Reserved(0xE));
+    assert_eq!(FrameType::from_raw(0xF), FrameType::Developmental);
+    assert_eq!(FrameType::Developmental.raw(), 0xF);
 }
 
 #[test]
-fn service_status_frame_round_trips() {
+fn service_status_signal_codec_round_trips_without_rev_a_frame_type() {
     let signals = vec![
         ServiceStatusSignal {
             address_qualifier: 0,
@@ -1334,13 +1441,19 @@ fn service_status_frame_round_trips() {
         },
     ];
 
-    let frame = InformationFrame::from_service_status(&signals).unwrap();
-    assert_eq!(frame.frame_type, FrameType::ServiceStatus);
-    assert_eq!(frame.service_status().unwrap(), signals);
+    let encoded = signals
+        .iter()
+        .map(|signal| signal.encode().unwrap())
+        .collect::<Vec<_>>();
+    let decoded = encoded
+        .iter()
+        .map(|bytes| ServiceStatusSignal::decode(bytes).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(decoded, signals);
 }
 
 #[test]
-fn current_report_list_round_trips() {
+fn current_report_list_codec_round_trips_without_rev_a_frame_type() {
     let crl = CurrentReportList {
         product_id: 8,
         tfr_notam: true,
@@ -1363,9 +1476,8 @@ fn current_report_list_round_trips() {
         ],
     };
 
-    let frame = InformationFrame::from_current_report_list(&crl).unwrap();
-    assert_eq!(frame.frame_type, FrameType::CurrentReportList);
-    assert_eq!(frame.current_report_list().unwrap(), crl);
+    let encoded = crl.encode().unwrap();
+    assert_eq!(CurrentReportList::decode(&encoded).unwrap(), crl);
 }
 
 #[test]
@@ -1395,6 +1507,12 @@ fn generic_text_nil_fields_and_qualifier_rules_are_supported() {
 
     let invalid = GenericTextRecord::parse("METAR KSLE 260900Z AM TEST REPORT").unwrap();
     assert!(invalid.validate_metar_taf_composition().is_err());
+
+    let empty_text = GenericTextRecord::parse("TAF KSLE 260900Z AM").unwrap();
+    let error = empty_text.validate_metar_taf_composition().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "generic text record text")
+    );
 }
 
 #[test]

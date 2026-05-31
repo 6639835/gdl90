@@ -75,3 +75,31 @@ fn frame_message_decoder_recovers_across_partial_corrupt_and_back_to_back_frames
         }))
     ));
 }
+
+#[test]
+fn frame_message_decoder_requires_distinct_start_flag_between_messages() {
+    let first = heartbeat_message(31).encode_frame().unwrap();
+    let second = heartbeat_message(32).encode_frame().unwrap();
+    let mut stream = first.clone();
+    stream.extend_from_slice(&second[1..]);
+
+    let mut decoder = FrameMessageDecoder::new();
+    let messages = decoder.push(&stream);
+    assert_eq!(messages.len(), 1);
+    assert!(matches!(
+        &messages[0],
+        Ok(Message::Heartbeat(Heartbeat {
+            timestamp_seconds_since_midnight: 31,
+            ..
+        }))
+    ));
+    assert!(decoder.finish().is_none());
+}
+
+#[test]
+fn frame_message_decoder_finish_reports_truncated_trailing_frame() {
+    let frame = heartbeat_message(33).encode_frame().unwrap();
+    let mut decoder = FrameMessageDecoder::new();
+    assert!(decoder.push(&frame[..frame.len() - 1]).is_empty());
+    assert_eq!(decoder.finish(), Some(Err(Gdl90Error::FrameTooShort)));
+}

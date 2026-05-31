@@ -51,6 +51,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for result in decoder.push(&bytes) {
                 println!("{:#?}", result?);
             }
+            if let Some(result) = decoder.finish() {
+                println!("{:#?}", result?);
+            }
         }
         Some("decode-file") => {
             let path = PathBuf::from(require_arg(args.next(), "session file")?);
