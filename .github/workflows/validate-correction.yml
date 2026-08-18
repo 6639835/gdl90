@@ -19,15 +19,23 @@ jobs:
       - name: Reconstruct and apply correction
         shell: bash
         run: |
-          for file in .validation/correction2/part.*; do
-            wc -c "$file"
-            sha256sum "$file"
-            if LC_ALL=C grep -n '[^A-Za-z0-9+/=]' "$file"; then
-              echo "invalid base64 character in $file"
-              exit 1
-            fi
-          done
-          cat .validation/correction2/part.* | tr -d '\r\n' | base64 --decode | gzip --decompress > /tmp/correction.patch
+          cat > /tmp/chunks.sha256 <<'EOF'
+          5be94a6fa188e613f1a36b4e4422dd01cafb2d278568bb6b2a396fb975da403e  .validation/correction3/part.00
+          15374869925e073a1d275b1690c503ca3deb5084c85a4de57460f2fdfce5fc9f  .validation/correction3/part.01
+          f62ab8a75c3d9dda611839a379f4cd8f4f5aaaa2434f96adc715d66f76020643  .validation/correction3/part.02
+          1a345fa1edb5f50b01bcef4d1ef76dfb9cace51ef4255dc892413e406ec88840  .validation/correction3/part.03
+          2c3f92932c142a6d5479813b176f114d9119e04a8065db9198cd42318667685f  .validation/correction3/part.04
+          f0faa8e16361e378bc20cfb7842415abce905cd67cd8c6ee6fcb0e3840b62235  .validation/correction3/part.05
+          e0fe92f4f7145944f31393f7c942ebd102c05eef2280161d73c1e57bb73d3a37  .validation/correction3/part.06
+          132414063c4b503ffc6d99e9ff8e21114ce297a2b7135c04fdbe8e71953dfde4  .validation/correction3/part.07
+          17cf07f567607f85cc8c604111ff26ee49823fc352db87d962c82c584d7ad94d  .validation/correction3/part.08
+          bc0dfb6d1a0357324dc39dca7210af0d55bae2f8e7e4860b8b0330cf960c1566  .validation/correction3/part.09
+          e9570ac722d21a1a1c52455211f5ce40aad50fbe90ac848ae6d4613c15c16fb4  .validation/correction3/part.10
+          58cf5bf53fcc7a0b654c7712e3f0883f7c41c8ba21e0c1bf589d8e6366dc84a1  .validation/correction3/part.11
+          52e764ce79060b38335bebcba0e5ac11d3a4ab5827982dc134fc8539054dcd60  .validation/correction3/part.12
+          EOF
+          sha256sum --check /tmp/chunks.sha256
+          cat .validation/correction3/part.* | base64 --decode | gzip --decompress > /tmp/correction.patch
           echo "cf3a4e68e80e93294b8ae47b4e9fe9f95cc0ca5f47e840406dbeb897ef6c7dde  /tmp/correction.patch" | sha256sum --check -
           git apply --check /tmp/correction.patch
           git apply /tmp/correction.patch
