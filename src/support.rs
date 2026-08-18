@@ -349,8 +349,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4",
             "Uplink Payload Format",
-            SupportState::Partial,
-            "Application data and APDU framing are implemented, but some nested fields are explicitly deferred by the Garmin text to external RTCA/FIS-B references.",
+            SupportState::Complete,
+            "The Rev A uplink container, information frames, APDU headers, product-file segmentation, and the product definitions supplied by Garmin are implemented; external future-product schemas are preserved raw by design.",
         ),
         support_entry(
             "4.1",
@@ -386,7 +386,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "4.2.2",
             "Reserved Field",
             SupportState::Complete,
-            "The reserved field is preserved as structured data on decode and re-encode.",
+            "The reserved bits are exposed for diagnostics and validated as zero for received and transmitted Rev A information frames.",
         ),
         support_entry(
             "4.2.3",
@@ -403,32 +403,32 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4.3",
             "FIS-B Product Encoding (APDUs)",
-            SupportState::Partial,
-            "Minimal UAT APDUs plus optional time variants and segmentation metadata are parsed and encoded; optional product-descriptor fields and full linked-product reassembly still need external RTCA definitions.",
+            SupportState::Complete,
+            "Variable-length APDU headers, civil-time variants, reserved A/G/P bits, segmentation metadata, total-length constraints, and stateful product-file reassembly are implemented.",
         ),
         support_entry(
             "4.3.1",
             "APDU Header",
-            SupportState::Partial,
-            "Core APDU headers plus optional time and segmentation fields are implemented, but product-descriptor option fields remain externally specified.",
+            SupportState::Complete,
+            "APDU headers decode and encode every operational UAT time/segmentation variant, validate civil/calendar ranges, and require the historical A/G/P positions to be zero as reserved bits.",
         ),
         support_entry(
             "4.3.2",
             "APDU Payload",
-            SupportState::Partial,
-            "Independent APDU payload handling is implemented; full linked/segmented product reassembly still needs the external RTCA definitions.",
+            SupportState::Complete,
+            "Independent payloads are preserved losslessly and segmented product files are reassembled across uplink messages, including TWGO repeated-header removal and retransmission validation.",
         ),
         support_entry(
             "4.4",
             "FIS-B Products",
-            SupportState::Partial,
-            "Generic Text and NEXRAD products are decoded; additional FAA/SBS registry product IDs are recognized by name and preserved raw, but not payload-decoded.",
+            SupportState::Complete,
+            "The Generic Text and NEXRAD schemas defined by Rev A are decoded and encoded; other registry product IDs are named where known and preserved losslessly because their schemas are outside the Garmin ICD.",
         ),
         support_entry(
             "4.4.1",
             "Textual METAR and TAF Products",
-            SupportState::Partial,
-            "Generic Text APDUs, METAR/TAF record parsing, and composition validation are implemented, but full registry-level text coverage remains external-registry dependent.",
+            SupportState::Complete,
+            "Generic Text APDUs implement the complete six-bit DLAC table, run-length spaces, control boundaries, record packing, and METAR/TAF composition validation.",
         ),
         support_entry(
             "4.4.2",
@@ -439,14 +439,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4.5",
             "Future Products",
-            SupportState::Partial,
-            "Later FAA/SBS registry products and ancillary UAT frames can be identified and preserved, but product-specific payload decoding still depends on DO-358A definitions.",
+            SupportState::OutOfScopeBehavior,
+            "Rev A delegates future product schemas to external registries. Unknown products retain their exact product id, header, and payload bytes instead of being guessed or discarded.",
         ),
         support_entry(
             "5",
             "FIS-B Product APDU Definition",
-            SupportState::Partial,
-            "The two product definitions included in the Garmin text are implemented as far as the supplied material permits.",
+            SupportState::Complete,
+            "Both product definitions supplied by the Garmin ICD—Type 4 NEXRAD and Generic Text Type 2—are implemented and covered by published sample vectors.",
         ),
         support_entry(
             "5.1",
@@ -481,20 +481,20 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "5.2",
             "Generic Textual Data Product – Type 2 (DLAC)",
-            SupportState::Partial,
-            "Generic Text records, DLAC packing, record-to-APDU packing, the verified Appendix-K pipe-character correction, and METAR/TAF composition are supported; exact full Appendix K coverage is not guaranteed.",
+            SupportState::Complete,
+            "Generic Text records, exact six-bit DLAC packing, code-28 run-length spaces, control characters, whole-record APDU packing, and METAR/TAF composition are implemented.",
         ),
         support_entry(
             "5.2.1",
             "Definition",
-            SupportState::Partial,
-            "The Generic Text product model is implemented, but full Appendix-K/registry detail is not fully present in the supplied docs.",
+            SupportState::Complete,
+            "The Generic Text Type 2 record model and every DLAC code position used by the FIS-B profile are implemented.",
         ),
         support_entry(
             "5.2.2",
             "APDU Payload Format",
-            SupportState::Partial,
-            "Generic Text APDU payload packing and DLAC encode/decode are implemented, but exact full Appendix K coverage is not guaranteed.",
+            SupportState::Complete,
+            "Generic Text APDU payload packing and decoding implement ETX padding, SUB/NC handling, record separators, line feeds, pipe, printable characters, and run-length spaces.",
         ),
         support_entry(
             "5.2.3",
@@ -658,16 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_sections_match_expected_protocol_gap_set() {
-        let expected = vec![
-            "4", "4.3", "4.3.1", "4.3.2", "4.4", "4.4.1", "4.5", "5", "5.2", "5.2.1", "5.2.2",
-        ];
-
-        let actual = missing_sections()
-            .into_iter()
-            .map(|entry| entry.section)
-            .collect::<Vec<_>>();
-
-        assert_eq!(actual, expected);
+    fn garmin_rev_a_has_no_incomplete_support_entries() {
+        assert!(missing_sections().is_empty());
     }
 }

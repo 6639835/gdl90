@@ -31,10 +31,14 @@ Rust library and CLI for encoding, decoding, transporting, recording, and analyz
   - VFR Code
 - UAT uplink parsing and encoding for the documented structures
   - Rev A information frames
-  - APDU headers, optional time metadata, and segmentation metadata
-  - Generic Text APDUs, record packing, and DLAC encode/decode
+  - APDU headers, civil-time variants, reserved-bit validation, and segmentation metadata
+  - stateful product-file reassembly across uplink messages
+  - out-of-order and duplicate-segment handling
+  - TWGO repeated-header removal for products 8 and 11–17
+  - Generic Text APDUs, whole-record packing, and exact six-bit DLAC encode/decode
+  - DLAC control codes and code-28 run-length spaces
   - NEXRAD APDUs and block payloads
-  - named-but-raw preservation for additional FIS-B product IDs
+  - named, lossless raw preservation for product schemas outside Garmin Rev A
 - Session tooling
   - read, write, and append recorded UDP datagram files
   - decode, validate, report, capture, and replay session traffic
@@ -70,8 +74,9 @@ src/
   error.rs        Shared error type
   bin/gdl90.rs    CLI utility
 examples/
-  end_to_end.rs   Standard message framing round trip
-  foreflight.rs   ForeFlight ID and AHRS examples
+  end_to_end.rs          Standard message framing round trip
+  foreflight.rs          ForeFlight ID and AHRS examples
+  uplink_reassembly.rs   Segmented FIS-B product-file reassembly
 tests/
   protocol.rs     Protocol encode/decode coverage
   session.rs      Session file coverage
@@ -126,6 +131,7 @@ The library is split into focused modules:
 ```bash
 cargo run --example end_to_end
 cargo run --example foreflight
+cargo run --example uplink_reassembly
 ```
 
 ## CLI
@@ -198,18 +204,18 @@ Verified in this repository with:
 ```bash
 cargo fmt --check
 cargo test
+cargo clippy --all-targets -- -D warnings
 ```
 
-## Current limits
+## Protocol scope and completion
 
-Most of the Garmin ICD surface implemented in this repository is marked complete by the built-in support matrix. The remaining gaps are concentrated in uplink product internals that depend on material outside this repository.
+The built-in support matrix has no incomplete entries for behavior defined by the Garmin GDL 90 Public ICD Rev A. The uplink implementation now includes variable APDU headers, one-based segmentation metadata, stateful reassembly, TWGO repeated-header handling, and the full FIS-B DLAC code table.
 
-- I-Frame type handling is strict to Garmin Rev A Table 18: `0x0` is FIS-B APDU, `0xF` is developmental, and `0x1..=0xE` are reserved
-- APDU product-descriptor option fields are still externally specified and are not fully modeled
-- full linked or segmented FIS-B product reassembly is not implemented
-- Generic Text support covers the implemented mappings and the verified Appendix K pipe-character correction, but exact full Appendix K behavior is not guaranteed
-- Generic Text and NEXRAD products are payload-decoded; other FAA/FIS-B registry products are identified and preserved raw rather than fully decoded
-- future or ancillary UAT/FIS-B products still depend on external RTCA or FAA definitions
+- I-Frame type handling is strict to Rev A Table 18: `0x0` is FIS-B APDU, `0xF` is developmental, and `0x1..=0xE` are reserved.
+- The historical APDU A/G/P positions are treated as reserved bits in the operational UAT/FIS-B profile and must be zero.
+- Generic Text Type 2 and NEXRAD Global Block Representation payloads—the product schemas contained in Rev A—are decoded and encoded.
+- Other FAA/FIS-B registry product IDs are named where known and preserve their exact APDU header and payload bytes. Schemas not contained in Rev A are intentionally not guessed.
+- `ApduReassembler` is stateful by design. Applications decide when to discard incomplete product files according to their own receive-window or timeout policy.
 
 Inspect the built-in support matrix with:
 

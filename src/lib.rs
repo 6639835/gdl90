@@ -32,7 +32,10 @@ pub use crate::message::{
     VerticalFigureOfMerit,
 };
 pub use crate::uplink::{
-    ApduMonthDay, ApduSegmentation, CurrentReportList, CurrentReportListItem, FisbProductId,
-    FrameType, NexradBlockReference, NexradGeoBounds, NexradIntensity, ServiceStatusSignal,
-    UatUplinkHeader,
+    Apdu, ApduHeader, ApduMonthDay, ApduProductFileKey, ApduReassembler, ApduSegmentation,
+    CurrentReportList, CurrentReportListItem, FisbProduct, FisbProductId, FrameType,
+    GenericTextApdu, GenericTextField, GenericTextRecord, GenericTextRecordKind, InformationFrame,
+    NexradApdu, NexradBlock, NexradBlockReference, NexradGeoBounds, NexradIntensity,
+    ReassembledApdu, ReassemblyStatus, ReassemblyStrategy, ServiceStatusSignal, TextQualifier,
+    UatUplinkHeader, UatUplinkPayload, decode_dlac_text, encode_dlac_text, is_twgo_product,
 };

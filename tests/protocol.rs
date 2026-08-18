@@ -17,11 +17,43 @@ use gdl90::message::{
 };
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
-    ApduHeader, ApduMonthDay, ApduSegmentation, CurrentReportList, CurrentReportListItem,
-    FisbProduct, FisbProductId, FrameType, GenericTextApdu, GenericTextField, GenericTextRecord,
-    GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, NexradBlockReference,
-    NexradIntensity, ServiceStatusSignal, TextQualifier, UatUplinkHeader, UatUplinkPayload,
+    Apdu, ApduHeader, ApduMonthDay, ApduProductFileKey, ApduReassembler, ApduSegmentation,
+    CurrentReportList, CurrentReportListItem, DLAC_END_OF_TEXT, DLAC_LINE_FEED,
+    DLAC_RECORD_SEPARATOR, DLAC_SUBSTITUTE, FisbProduct, FisbProductId, FrameType, GenericTextApdu,
+    GenericTextField, GenericTextRecord, GenericTextRecordKind, InformationFrame, NexradApdu,
+    NexradBlock, NexradBlockReference, NexradIntensity, ReassemblyStatus, ReassemblyStrategy,
+    ServiceStatusSignal, TextQualifier, UatUplinkHeader, UatUplinkPayload, decode_dlac_text,
+    encode_dlac_text,
 };
+
+fn segmented_apdu(
+    product_id: u16,
+    product_file_id: u16,
+    product_file_length: u16,
+    apdu_number: u16,
+    payload: &[u8],
+) -> Apdu {
+    Apdu {
+        header: ApduHeader {
+            application_flag: false,
+            geo_flag: false,
+            product_file_flag: false,
+            product_id,
+            segmentation_flag: true,
+            time_option: 0,
+            month_day: None,
+            hours: 12,
+            minutes: 34,
+            seconds: None,
+            segmentation: Some(ApduSegmentation {
+                product_file_id,
+                product_file_length,
+                apdu_number,
+            }),
+        },
+        payload: payload.to_vec(),
+    }
+}
 
 fn example_target_report() -> TargetReport {
     TargetReport {
@@ -595,17 +627,17 @@ fn nexrad_rle_block_round_trip() {
 fn nexrad_does_not_classify_non_rle_reference_as_rle() {
     let payload = [0x04, 0xA5, 0x70]
         .into_iter()
-        .chain(std::iter::repeat(0x07).take(128))
+        .chain(std::iter::repeat_n(0x07, 128))
         .collect::<Vec<_>>();
     let block = NexradBlock::from_payload(&payload).unwrap();
     assert!(matches!(block, NexradBlock::Unparsed { .. }));
 }
 
 #[test]
-fn apdu_rejects_unsupported_descriptor_options_and_invalid_time_flags() {
+fn apdu_rejects_reserved_agp_bits_and_invalid_time_flags() {
     let error = gdl90::uplink::Apdu::decode(&[0x80, 0x00, 0x00, 0x00]).unwrap_err();
     assert!(
-        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU product descriptor options")
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU reserved A/G/P bits")
     );
 
     let header = ApduHeader {
@@ -679,7 +711,7 @@ fn generic_text_and_nexrad_validate_documented_minimal_headers() {
     .to_apdu()
     .unwrap_err();
     assert!(
-        matches!(nexrad_error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU product descriptor options")
+        matches!(nexrad_error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU reserved A/G/P bits")
     );
 }
 
@@ -844,6 +876,321 @@ fn apdu_supports_easa_time_variants_and_segmentation_block() {
     };
     let error = too_large.encode().unwrap_err();
     assert!(matches!(error, gdl90::Gdl90Error::InvalidLength { context, .. } if context == "APDU"));
+}
+
+#[test]
+fn apdu_header_enforces_civil_calendar_and_one_based_segment_ranges() {
+    let base = ApduHeader {
+        application_flag: false,
+        geo_flag: false,
+        product_file_flag: false,
+        product_id: 8,
+        segmentation_flag: false,
+        time_option: 0,
+        month_day: None,
+        hours: 23,
+        minutes: 59,
+        seconds: None,
+        segmentation: None,
+    };
+    base.validate_operational_uat().unwrap();
+
+    let mut invalid = base;
+    invalid.hours = 24;
+    let error = invalid.validate_operational_uat().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU hours")
+    );
+
+    invalid = base;
+    invalid.minutes = 60;
+    let error = invalid.validate_operational_uat().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU minutes")
+    );
+
+    invalid = ApduHeader {
+        time_option: 0b10,
+        month_day: Some(ApduMonthDay { month: 0, day: 1 }),
+        ..base
+    };
+    let error = invalid.validate_operational_uat().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU month")
+    );
+
+    invalid = ApduHeader {
+        time_option: 0b01,
+        seconds: Some(60),
+        ..base
+    };
+    let error = invalid.validate_operational_uat().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU seconds")
+    );
+
+    invalid = ApduHeader {
+        segmentation_flag: true,
+        segmentation: Some(ApduSegmentation {
+            product_file_id: 1,
+            product_file_length: 2,
+            apdu_number: 0,
+        }),
+        ..base
+    };
+    let error = invalid.validate_operational_uat().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU number")
+    );
+
+    invalid.segmentation = Some(ApduSegmentation {
+        product_file_id: 1,
+        product_file_length: 2,
+        apdu_number: 3,
+    });
+    let error = invalid.validate_operational_uat().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU number")
+    );
+}
+
+#[test]
+fn minimal_apdu_header_parser_rejects_nonminimal_headers() {
+    let header = ApduHeader {
+        application_flag: false,
+        geo_flag: false,
+        product_file_flag: false,
+        product_id: 63,
+        segmentation_flag: false,
+        time_option: 0,
+        month_day: None,
+        hours: 12,
+        minutes: 34,
+        seconds: None,
+        segmentation: None,
+    };
+    let bytes: [u8; 4] = header.encode().unwrap().try_into().unwrap();
+    assert_eq!(ApduHeader::from_minimal_bytes(bytes).unwrap(), header);
+
+    let mut reserved = bytes;
+    reserved[0] |= 0x80;
+    let error = ApduHeader::from_minimal_bytes(reserved).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU reserved A/G/P bits")
+    );
+}
+
+#[test]
+fn apdu_total_length_uses_the_actual_variable_header_size() {
+    let header = ApduHeader {
+        application_flag: false,
+        geo_flag: false,
+        product_file_flag: false,
+        product_id: 8,
+        segmentation_flag: true,
+        time_option: 0b10,
+        month_day: Some(ApduMonthDay { month: 8, day: 18 }),
+        hours: 12,
+        minutes: 34,
+        seconds: None,
+        segmentation: Some(ApduSegmentation {
+            product_file_id: 7,
+            product_file_length: 2,
+            apdu_number: 1,
+        }),
+    };
+    assert_eq!(header.encode().unwrap().len(), 9);
+
+    let fits = Apdu {
+        header,
+        payload: vec![0; 413],
+    };
+    assert_eq!(fits.encode().unwrap().len(), 422);
+
+    let too_large = Apdu {
+        header,
+        payload: vec![0; 414],
+    };
+    let error = too_large.encode().unwrap_err();
+    assert!(matches!(error, gdl90::Gdl90Error::InvalidLength { context, .. } if context == "APDU"));
+}
+
+#[test]
+fn dlac_matches_reference_vectors_and_space_run_encoding() {
+    assert_eq!(
+        decode_dlac_text(&[0x34, 0x55, 0x01, 0x4A, 0x08, 0x20]).unwrap(),
+        "METAR   "
+    );
+    assert_eq!(decode_dlac_text(&[0x05, 0xC0, 0xC2]).unwrap(), "A   B");
+    assert_eq!(encode_dlac_text("A   B").unwrap(), vec![0x05, 0xC0, 0xC2]);
+
+    let long_spaces = format!("A{}B", " ".repeat(130));
+    let decoded = decode_dlac_text(&encode_dlac_text(&long_spaces).unwrap()).unwrap();
+    assert_eq!(decoded.trim_end_matches(DLAC_END_OF_TEXT), long_spaces);
+}
+
+#[test]
+fn dlac_control_positions_round_trip_and_dangling_run_is_rejected() {
+    let text = format!("A{DLAC_SUBSTITUTE}{DLAC_RECORD_SEPARATOR}{DLAC_LINE_FEED}|?");
+    let decoded = decode_dlac_text(&encode_dlac_text(&text).unwrap()).unwrap();
+    assert_eq!(decoded.trim_end_matches(DLAC_END_OF_TEXT), text);
+
+    let error = decode_dlac_text(&[0x70]).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "DLAC space run")
+    );
+}
+
+#[test]
+fn apdu_reassembler_completes_out_of_order_and_detects_retransmissions() {
+    let first = segmented_apdu(999, 17, 2, 1, b"FIRST-");
+    let second = segmented_apdu(999, 17, 2, 2, b"SECOND");
+    let key = ApduProductFileKey {
+        product_id: 999,
+        product_file_id: 17,
+    };
+    let mut reassembler = ApduReassembler::new();
+
+    assert_eq!(
+        reassembler.push(second.clone()).unwrap(),
+        ReassemblyStatus::Pending {
+            key,
+            received: 1,
+            total: 2,
+        }
+    );
+    assert_eq!(
+        reassembler.push(second.clone()).unwrap(),
+        ReassemblyStatus::Duplicate {
+            key,
+            apdu_number: 2,
+            received: 1,
+            total: 2,
+        }
+    );
+
+    let mut conflicting = second.clone();
+    conflicting.payload = b"CONFLICT".to_vec();
+    let error = reassembler.push(conflicting).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU retransmission")
+    );
+
+    let complete = reassembler.push(first).unwrap();
+    match complete {
+        ReassemblyStatus::Complete(product) => {
+            assert_eq!(product.key, key);
+            assert_eq!(product.payload, b"FIRST-SECOND");
+            assert_eq!(product.segment_count, 2);
+            assert_eq!(product.strategy, ReassemblyStrategy::Concatenate);
+            assert!(!product.header.segmentation_flag);
+            assert!(product.header.segmentation.is_none());
+        }
+        other => panic!("expected completed product file, got {other:?}"),
+    }
+    assert_eq!(reassembler.pending_file_count(), 0);
+}
+
+#[test]
+fn apdu_reassembler_rejects_inconsistent_file_lengths_and_supports_cleanup() {
+    let first = segmented_apdu(999, 23, 2, 1, b"FIRST");
+    let inconsistent = segmented_apdu(999, 23, 3, 2, b"SECOND");
+    let key = ApduProductFileKey {
+        product_id: 999,
+        product_file_id: 23,
+    };
+    let mut reassembler = ApduReassembler::new();
+
+    assert!(matches!(
+        reassembler.push(first).unwrap(),
+        ReassemblyStatus::Pending { .. }
+    ));
+    let error = reassembler.push(inconsistent).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "APDU product file length")
+    );
+    assert_eq!(reassembler.pending_keys(), vec![key]);
+    assert!(reassembler.discard(key));
+    assert_eq!(reassembler.pending_file_count(), 0);
+    assert!(!reassembler.discard(key));
+
+    reassembler
+        .push(segmented_apdu(999, 24, 2, 1, b"OTHER"))
+        .unwrap();
+    reassembler.clear();
+    assert_eq!(reassembler.pending_file_count(), 0);
+}
+
+#[test]
+fn twgo_reassembly_removes_repeated_headers_from_later_segments() {
+    let twgo_header = [1, 2, 3, 4, 5, 6];
+    let first_payload = twgo_header.into_iter().chain(*b"ONE").collect::<Vec<_>>();
+    let second_payload = twgo_header.into_iter().chain(*b"TWO").collect::<Vec<_>>();
+    let first = segmented_apdu(8, 44, 2, 1, &first_payload);
+    let second = segmented_apdu(8, 44, 2, 2, &second_payload);
+    let mut reassembler = ApduReassembler::new();
+
+    assert!(matches!(
+        reassembler.push(second).unwrap(),
+        ReassemblyStatus::Pending { .. }
+    ));
+    match reassembler.push(first).unwrap() {
+        ReassemblyStatus::Complete(product) => {
+            assert_eq!(product.strategy, ReassemblyStrategy::TwgoRepeatedHeader);
+            assert_eq!(
+                product.payload,
+                [twgo_header.as_slice(), b"ONETWO"].concat()
+            );
+        }
+        other => panic!("expected completed TWGO product, got {other:?}"),
+    }
+}
+
+#[test]
+fn twgo_reassembly_rejects_inconsistent_repeated_headers() {
+    let first = segmented_apdu(8, 45, 2, 1, b"ABCDEFONE");
+    let second = segmented_apdu(8, 45, 2, 2, b"ABCDEGTWO");
+    let mut reassembler = ApduReassembler::new();
+
+    reassembler.push(first).unwrap();
+    let error = reassembler.push(second).unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "TWGO repeated header")
+    );
+    assert_eq!(reassembler.pending_file_count(), 1);
+}
+
+#[test]
+fn uplink_payload_feeds_segments_across_messages_and_blocks_partial_decode() {
+    let first = segmented_apdu(8, 51, 2, 1, b"ABCDEFONE");
+    let second = segmented_apdu(8, 51, 2, 2, b"ABCDEFTWO");
+    let payload_one = UatUplinkPayload::from_information_frames(
+        [0; 8],
+        &[InformationFrame::from_apdu(&first).unwrap()],
+    )
+    .unwrap();
+    let payload_two = UatUplinkPayload::from_information_frames(
+        [0; 8],
+        &[InformationFrame::from_apdu(&second).unwrap()],
+    )
+    .unwrap();
+
+    let error = payload_one.fisb_products().unwrap_err();
+    assert!(
+        matches!(error, gdl90::Gdl90Error::InvalidField { field, .. } if field == "segmented FIS-B APDU")
+    );
+
+    let mut reassembler = ApduReassembler::new();
+    assert!(matches!(
+        payload_one.reassembly_updates(&mut reassembler).unwrap()[0],
+        ReassemblyStatus::Pending { .. }
+    ));
+    match &payload_two.reassembly_updates(&mut reassembler).unwrap()[0] {
+        ReassemblyStatus::Complete(product) => {
+            assert_eq!(product.payload, b"ABCDEFONETWO");
+        }
+        other => panic!("expected complete reassembly, got {other:?}"),
+    }
 }
 
 #[test]
