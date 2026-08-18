@@ -235,12 +235,12 @@ fn decode_control_callsign(bytes: &[u8]) -> Result<String> {
         ));
     }
     let first_pad = bytes.iter().position(|byte| *byte == b' ');
-    if let Some(first_pad) = first_pad {
-        if bytes[first_pad..].iter().any(|byte| *byte != b' ') {
-            return Err(Gdl90Error::ControlFormat(
-                "call sign spaces must be trailing padding",
-            ));
-        }
+    if let Some(first_pad) = first_pad
+        && bytes[first_pad..].iter().any(|byte| *byte != b' ')
+    {
+        return Err(Gdl90Error::ControlFormat(
+            "call sign spaces must be trailing padding",
+        ));
     }
     Ok(text.trim_end().to_string())
 }

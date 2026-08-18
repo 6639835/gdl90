@@ -249,14 +249,13 @@ impl UplinkData {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
-        if let Some(tor) = self.time_of_reception {
-            if tor > MAX_TIME_OF_RECEPTION_TICKS {
-                return Err(Gdl90Error::InvalidField {
-                    field: "time of reception",
-                    details: "must be in the range 0..=12499999 or omitted when invalid"
-                        .to_string(),
-                });
-            }
+        if let Some(tor) = self.time_of_reception
+            && tor > MAX_TIME_OF_RECEPTION_TICKS
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "time of reception",
+                details: "must be in the range 0..=12499999 or omitted when invalid".to_string(),
+            });
         }
         if !self.payload.decoded_header()?.application_data_valid {
             return Err(Gdl90Error::InvalidField {
@@ -1299,14 +1298,13 @@ impl<const N: usize> PassThroughReport<N> {
     }
 
     pub fn encode(&self, message_id: u8) -> Result<Vec<u8>> {
-        if let Some(tor) = self.time_of_reception {
-            if tor > MAX_TIME_OF_RECEPTION_TICKS {
-                return Err(Gdl90Error::InvalidField {
-                    field: "time of reception",
-                    details: "must be in the range 0..=12499999 or omitted when invalid"
-                        .to_string(),
-                });
-            }
+        if let Some(tor) = self.time_of_reception
+            && tor > MAX_TIME_OF_RECEPTION_TICKS
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "time of reception",
+                details: "must be in the range 0..=12499999 or omitted when invalid".to_string(),
+            });
         }
 
         let mut out = Vec::with_capacity(N + 4);
@@ -1443,6 +1441,9 @@ impl OwnshipGeometricAltitude {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+// Keeping UplinkData inline preserves the existing public enum shape and
+// avoids a source-breaking Box indirection in every match and constructor.
+#[allow(clippy::large_enum_variant)]
 pub enum Message {
     Heartbeat(Heartbeat),
     Initialization(Initialization),
@@ -1699,7 +1700,7 @@ fn encode_vertical_velocity(value: Option<i16>) -> Result<u16> {
         } else if units <= -510 {
             0x0E02
         } else {
-            (units as i16 as u16) & 0x0FFF
+            (units as u16) & 0x0FFF
         }
     } else {
         0x0800

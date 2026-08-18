@@ -29,7 +29,7 @@ fn frame_message_decoder_recovers_across_partial_corrupt_and_back_to_back_frames
     let mut crc_error = heartbeat_message(23).encode_frame().unwrap();
     crc_error[2] ^= 0x01;
     let unknown = encode_frame(&[0x2A, 0x10, 0x20]);
-    let invalid_escape = vec![0x7E, 0x7D, 0x00, 0x7E];
+    let invalid_escape = [0x7E, 0x7D, 0x00, 0x7E];
 
     let mut decoder = FrameMessageDecoder::new();
 
