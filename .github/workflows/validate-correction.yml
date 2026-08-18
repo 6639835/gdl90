@@ -19,7 +19,15 @@ jobs:
       - name: Reconstruct and apply correction
         shell: bash
         run: |
-          cat .validation/correction2/part.* | base64 --decode | gzip --decompress > /tmp/correction.patch
+          for file in .validation/correction2/part.*; do
+            wc -c "$file"
+            sha256sum "$file"
+            if LC_ALL=C grep -n '[^A-Za-z0-9+/=]' "$file"; then
+              echo "invalid base64 character in $file"
+              exit 1
+            fi
+          done
+          cat .validation/correction2/part.* | tr -d '\r\n' | base64 --decode | gzip --decompress > /tmp/correction.patch
           echo "cf3a4e68e80e93294b8ae47b4e9fe9f95cc0ca5f47e840406dbeb897ef6c7dde  /tmp/correction.patch" | sha256sum --check -
           git apply --check /tmp/correction.patch
           git apply /tmp/correction.patch
