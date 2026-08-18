@@ -1,0 +1,41 @@
+name: Completion validation
+
+on:
+  push:
+    branches:
+      - agent/gdl90-completion-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Apply candidate completion patch
+        shell: bash
+        run: |
+          cat .validation/patch.bz2.b64.part0* | base64 --decode | bunzip2 > /tmp/gdl90-completion.patch
+          git apply --check /tmp/gdl90-completion.patch
+          git apply /tmp/gdl90-completion.patch
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build data
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run all tests and examples
+        run: cargo test --all-targets
+
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --all-targets -- -D warnings
