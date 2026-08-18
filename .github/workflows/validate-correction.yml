@@ -1,0 +1,33 @@
+name: Validate correction patch
+
+on:
+  push:
+    branches:
+      - validation/gdl90-correction-20260818-2
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct and apply correction
+        shell: bash
+        run: |
+          cat .validation/correction2/part.* | base64 --decode | gzip --decompress > /tmp/correction.patch
+          echo "97056f626e83bda6ae056fbe93de5ce2e6bc9f94f1590dd2515d253444e5b1be  /tmp/correction.patch" | sha256sum --check -
+          git apply --check /tmp/correction.patch
+          git apply /tmp/correction.patch
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check source diff
+        run: git diff --check
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Tests
+        run: cargo test --all-targets
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
