@@ -39,6 +39,10 @@ jobs:
           echo "cf3a4e68e80e93294b8ae47b4e9fe9f95cc0ca5f47e840406dbeb897ef6c7dde  /tmp/correction.patch" | sha256sum --check -
           git apply --check /tmp/correction.patch
           git apply /tmp/correction.patch
+          base64 --decode .validation/correction3/clippy-followup.b64 > /tmp/clippy-followup.patch
+          echo "0467c591244ffe34e5f0ba441fe2993ed60ee3f25794665aad844e491158b0b7  /tmp/clippy-followup.patch" | sha256sum --check -
+          git apply --check /tmp/clippy-followup.patch
+          git apply /tmp/clippy-followup.patch
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
