@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Gdl90Error, Result};
 use crate::message::Message;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,13 +23,62 @@ impl Default for BandwidthConfig {
 }
 
 impl BandwidthConfig {
-    pub fn byte_budget_per_second(&self) -> usize {
+    pub fn validate(&self) -> Result<()> {
+        if self.baud_rate == 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "bandwidth baud rate",
+                details: "must be greater than zero".to_string(),
+            });
+        }
+        if self.utilization_denominator == 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "bandwidth utilization denominator",
+                details: "must be greater than zero".to_string(),
+            });
+        }
+        if self.utilization_numerator > self.utilization_denominator {
+            return Err(Gdl90Error::InvalidField {
+                field: "bandwidth utilization",
+                details: "numerator must not exceed denominator".to_string(),
+            });
+        }
+        if self.uplinks_per_second > 4 {
+            return Err(Gdl90Error::InvalidField {
+                field: "primary uplinks per second",
+                details: "Garmin Rev A permits a configured value in the range 0..=4".to_string(),
+            });
+        }
+        if self.byte_budget_override == Some(0) {
+            return Err(Gdl90Error::InvalidField {
+                field: "bandwidth byte budget override",
+                details: "must be greater than zero when present".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn byte_budget_per_second(&self) -> Result<usize> {
+        self.validate()?;
         if let Some(budget) = self.byte_budget_override {
-            return budget;
+            return Ok(budget);
         }
 
-        ((self.baud_rate as u64 * self.utilization_numerator as u64)
-            / (10 * self.utilization_denominator as u64)) as usize
+        let numerator = u64::from(self.baud_rate)
+            .checked_mul(u64::from(self.utilization_numerator))
+            .ok_or(Gdl90Error::InvalidField {
+                field: "bandwidth byte budget",
+                details: "calculation overflowed".to_string(),
+            })?;
+        let denominator = 10u64
+            .checked_mul(u64::from(self.utilization_denominator))
+            .ok_or(Gdl90Error::InvalidField {
+                field: "bandwidth byte budget",
+                details: "calculation overflowed".to_string(),
+            })?;
+        usize::try_from(numerator / denominator).map_err(|_| Gdl90Error::InvalidField {
+            field: "bandwidth byte budget",
+            details: "calculated budget does not fit in usize".to_string(),
+        })
     }
 }
 
@@ -43,7 +92,6 @@ pub struct TrafficCandidate {
 pub struct UplinkCandidate {
     pub station_range_nm: f64,
     pub time_slot: u8,
-    pub has_valid_application_data: bool,
     pub message: Message,
 }
 
@@ -90,8 +138,9 @@ pub struct BandwidthManager {
 }
 
 impl BandwidthManager {
-    pub fn new(config: BandwidthConfig) -> Self {
-        Self { config }
+    pub fn new(config: BandwidthConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self { config })
     }
 
     pub fn config(&self) -> &BandwidthConfig {
@@ -99,7 +148,7 @@ impl BandwidthManager {
     }
 
     pub fn schedule(&self, mut inputs: ScheduleInputs) -> Result<ScheduleResult> {
-        let byte_budget = self.config.byte_budget_per_second();
+        let byte_budget = self.config.byte_budget_per_second()?;
         let mut selected = Vec::new();
         let mut used_bytes = 0usize;
 
@@ -125,11 +174,26 @@ impl BandwidthManager {
             .proximate_traffic
             .sort_by(|left, right| left.range_nm.total_cmp(&right.range_nm));
 
-        let mut eligible_uplinks = inputs
-            .uplinks
-            .into_iter()
-            .filter(|candidate| candidate.has_valid_application_data)
-            .collect::<Vec<_>>();
+        let mut eligible_uplinks = Vec::new();
+        let mut invalid_uplink_count = 0usize;
+        for candidate in inputs.uplinks {
+            let application_data_valid = match &candidate.message {
+                Message::UplinkData(message) => {
+                    message.payload.decoded_header()?.application_data_valid
+                }
+                _ => {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "uplink candidate message",
+                        details: "must contain a GDL90 Uplink Data message".to_string(),
+                    });
+                }
+            };
+            if application_data_valid {
+                eligible_uplinks.push(candidate);
+            } else {
+                invalid_uplink_count += 1;
+            }
+        }
         eligible_uplinks.sort_by(|left, right| {
             left.station_range_nm
                 .total_cmp(&right.station_range_nm)
@@ -175,7 +239,9 @@ impl BandwidthManager {
             selected,
             dropped_alert_traffic,
             dropped_proximate_traffic,
-            dropped_uplinks: dropped_primary_uplinks + dropped_secondary_uplinks,
+            dropped_uplinks: invalid_uplink_count
+                + dropped_primary_uplinks
+                + dropped_secondary_uplinks,
             over_budget_due_to_mandatory_messages,
         })
     }
@@ -188,7 +254,12 @@ fn push_mandatory(
     used_bytes: &mut usize,
 ) -> Result<()> {
     let size_bytes = message.encode_frame()?.len();
-    *used_bytes += size_bytes;
+    *used_bytes = used_bytes
+        .checked_add(size_bytes)
+        .ok_or(Gdl90Error::InvalidField {
+            field: "bandwidth used bytes",
+            details: "counter overflowed".to_string(),
+        })?;
     selected.push(ScheduledMessage {
         stage,
         size_bytes,
@@ -207,8 +278,10 @@ fn schedule_traffic_group(
     let mut dropped = 0usize;
     for candidate in candidates {
         let size_bytes = candidate.message.encode_frame()?.len();
-        if *used_bytes + size_bytes <= byte_budget {
-            *used_bytes += size_bytes;
+        if let Some(total) = used_bytes.checked_add(size_bytes)
+            && total <= byte_budget
+        {
+            *used_bytes = total;
             selected.push(ScheduledMessage {
                 stage,
                 size_bytes,
@@ -231,8 +304,10 @@ fn schedule_uplink_group(
     let mut dropped = 0usize;
     for candidate in candidates {
         let size_bytes = candidate.message.encode_frame()?.len();
-        if *used_bytes + size_bytes <= byte_budget {
-            *used_bytes += size_bytes;
+        if let Some(total) = used_bytes.checked_add(size_bytes)
+            && total <= byte_budget
+        {
+            *used_bytes = total;
             selected.push(ScheduledMessage {
                 stage,
                 size_bytes,
@@ -248,6 +323,8 @@ fn schedule_uplink_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::UplinkData;
+    use crate::uplink::{APPLICATION_DATA_LEN, UatUplinkHeader, UatUplinkPayload};
 
     fn dummy_message(id: u8, payload_len: usize) -> Message {
         Message::Unknown {
@@ -256,13 +333,35 @@ mod tests {
         }
     }
 
+    fn uplink_message(application_data_valid: bool) -> Message {
+        let header = UatUplinkHeader {
+            position_valid: false,
+            latitude_deg: 0.0,
+            longitude_deg: 0.0,
+            utc_coupled: false,
+            application_data_valid,
+            slot_id: 0,
+            tisb_site_id: 0,
+        }
+        .encode()
+        .unwrap();
+        Message::UplinkData(UplinkData {
+            time_of_reception: None,
+            payload: UatUplinkPayload {
+                header,
+                application_data: [0; APPLICATION_DATA_LEN],
+            },
+        })
+    }
+
     #[test]
     fn schedules_in_documented_stage_order() {
         let manager = BandwidthManager::new(BandwidthConfig {
-            byte_budget_override: Some(30),
+            byte_budget_override: Some(470),
             uplinks_per_second: 1,
             ..BandwidthConfig::default()
-        });
+        })
+        .unwrap();
 
         let result = manager
             .schedule(ScheduleInputs {
@@ -282,19 +381,17 @@ mod tests {
                     UplinkCandidate {
                         station_range_nm: 10.0,
                         time_slot: 4,
-                        has_valid_application_data: true,
-                        message: dummy_message(5, 0),
+                        message: uplink_message(true),
                     },
                     UplinkCandidate {
                         station_range_nm: 2.0,
                         time_slot: 1,
-                        has_valid_application_data: true,
-                        message: dummy_message(6, 0),
+                        message: uplink_message(true),
                     },
                 ],
                 proximate_traffic: vec![TrafficCandidate {
                     range_nm: 3.0,
-                    message: dummy_message(7, 0),
+                    message: dummy_message(8, 0),
                 }],
             })
             .unwrap();
@@ -312,8 +409,8 @@ mod tests {
                 (ScheduledStage::Ownship, 2),
                 (ScheduledStage::AlertTraffic, 4),
                 (ScheduledStage::AlertTraffic, 3),
-                (ScheduledStage::PrimaryUplink, 6),
-                (ScheduledStage::ProximateTraffic, 7),
+                (ScheduledStage::PrimaryUplink, 7),
+                (ScheduledStage::ProximateTraffic, 8),
             ]
         );
         assert_eq!(result.dropped_uplinks, 1);
@@ -322,12 +419,13 @@ mod tests {
     }
 
     #[test]
-    fn filters_invalid_application_data_uplinks() {
+    fn derives_application_data_validity_from_the_uplink_header() {
         let manager = BandwidthManager::new(BandwidthConfig {
-            byte_budget_override: Some(50),
+            byte_budget_override: Some(500),
             uplinks_per_second: 4,
             ..BandwidthConfig::default()
-        });
+        })
+        .unwrap();
 
         let result = manager
             .schedule(ScheduleInputs {
@@ -338,14 +436,12 @@ mod tests {
                     UplinkCandidate {
                         station_range_nm: 1.0,
                         time_slot: 0,
-                        has_valid_application_data: false,
-                        message: dummy_message(3, 0),
+                        message: uplink_message(false),
                     },
                     UplinkCandidate {
                         station_range_nm: 1.0,
                         time_slot: 1,
-                        has_valid_application_data: true,
-                        message: dummy_message(4, 0),
+                        message: uplink_message(true),
                     },
                 ],
                 proximate_traffic: Vec::new(),
@@ -357,7 +453,61 @@ mod tests {
             .iter()
             .map(|scheduled| scheduled.message.message_id())
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec![1, 2, 4]);
+        assert_eq!(ids, vec![1, 2, 7]);
+        assert_eq!(result.dropped_uplinks, 1);
+    }
+
+    #[test]
+    fn rejects_invalid_configuration_instead_of_panicking() {
+        let error = BandwidthManager::new(BandwidthConfig {
+            utilization_denominator: 0,
+            ..BandwidthConfig::default()
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Gdl90Error::InvalidField {
+                field: "bandwidth utilization denominator",
+                ..
+            }
+        ));
+
+        assert!(
+            BandwidthManager::new(BandwidthConfig {
+                uplinks_per_second: 5,
+                ..BandwidthConfig::default()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_non_uplink_candidates() {
+        let manager = BandwidthManager::new(BandwidthConfig {
+            byte_budget_override: Some(500),
+            ..BandwidthConfig::default()
+        })
+        .unwrap();
+        let error = manager
+            .schedule(ScheduleInputs {
+                heartbeat: dummy_message(1, 0),
+                ownship: dummy_message(2, 0),
+                alert_traffic: Vec::new(),
+                uplinks: vec![UplinkCandidate {
+                    station_range_nm: 1.0,
+                    time_slot: 0,
+                    message: dummy_message(3, 0),
+                }],
+                proximate_traffic: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Gdl90Error::InvalidField {
+                field: "uplink candidate message",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -365,7 +515,8 @@ mod tests {
         let manager = BandwidthManager::new(BandwidthConfig {
             byte_budget_override: Some(8),
             ..BandwidthConfig::default()
-        });
+        })
+        .unwrap();
 
         let result = manager
             .schedule(ScheduleInputs {

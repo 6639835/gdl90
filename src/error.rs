@@ -16,11 +16,22 @@ pub enum Gdl90Error {
     InvalidMessageId(u8),
     MissingFrameFlag,
     FrameTooShort,
+    FrameTooLong {
+        limit: usize,
+    },
     DanglingEscape,
     InvalidEscapeByte(u8),
     CrcMismatch {
         expected: u16,
         actual: u16,
+    },
+    DatagramTooLarge {
+        limit: usize,
+        actual: usize,
+    },
+    ResourceLimit {
+        resource: &'static str,
+        limit: usize,
     },
     Utf8 {
         field: &'static str,
@@ -55,6 +66,12 @@ impl fmt::Display for Gdl90Error {
             Self::InvalidMessageId(id) => write!(f, "unsupported message id {id:#04x}"),
             Self::MissingFrameFlag => write!(f, "frame is missing start or end flag"),
             Self::FrameTooShort => write!(f, "frame is too short"),
+            Self::FrameTooLong { limit } => {
+                write!(
+                    f,
+                    "frame exceeds the configured {limit}-byte stuffed-frame limit"
+                )
+            }
             Self::DanglingEscape => write!(f, "frame ended with a dangling escape byte"),
             Self::InvalidEscapeByte(byte) => write!(f, "invalid escaped byte {byte:#04x}"),
             Self::CrcMismatch { expected, actual } => {
@@ -62,6 +79,13 @@ impl fmt::Display for Gdl90Error {
                     f,
                     "crc mismatch: expected {expected:#06x}, got {actual:#06x}"
                 )
+            }
+            Self::DatagramTooLarge { limit, actual } => write!(
+                f,
+                "UDP datagram exceeds the configured {limit}-byte limit (received at least {actual} bytes)"
+            ),
+            Self::ResourceLimit { resource, limit } => {
+                write!(f, "{resource} exceeds the configured limit of {limit}")
             }
             Self::Utf8 { field } => write!(f, "{field} is not valid UTF-8"),
             Self::UnsupportedCharacter { context, ch } => {

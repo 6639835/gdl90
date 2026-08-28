@@ -2,6 +2,13 @@
 name = "gdl90"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "Bounded GDL90 and ForeFlight protocol codecs and transport helpers"
+license = "MIT"
+repository = "https://github.com/6639835/gdl90"
+readme = "README.md"
+keywords = ["gdl90", "ads-b", "aviation", "foreflight", "fis-b"]
+categories = ["aerospace", "encoding", "network-programming"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

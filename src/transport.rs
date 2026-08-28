@@ -77,6 +77,7 @@ impl ForeFlightUdpSender {
         self.inner.target()
     }
 
+    /// Uses the conservative IPv6 packet budget when no destination address is available.
     pub fn encode_messages(messages: &[Message]) -> Result<Vec<u8>> {
         foreflight::encode_datagram(messages)
     }
@@ -86,7 +87,7 @@ impl ForeFlightUdpSender {
     }
 
     pub fn send_messages(&self, messages: &[Message]) -> Result<usize> {
-        let datagram = Self::encode_messages(messages)?;
+        let datagram = foreflight::encode_datagram_for_ip(messages, self.inner.target().ip())?;
         self.inner.send_frame(&datagram)
     }
 }
@@ -148,7 +149,6 @@ impl UdpGdl90Sender {
 #[derive(Debug)]
 pub struct UdpGdl90Receiver {
     socket: UdpSocket,
-    decoder: FrameMessageDecoder,
     max_datagram_size: usize,
 }
 
@@ -159,6 +159,17 @@ pub struct UdpDatagram {
     pub messages: Vec<Result<Message>>,
 }
 
+/// Decodes exactly one UDP datagram. Decoder state is deliberately not shared
+/// across datagrams or source addresses, so packet loss cannot splice frames.
+pub fn decode_datagram(bytes: &[u8]) -> Vec<Result<Message>> {
+    let mut decoder = FrameMessageDecoder::new();
+    let mut messages = decoder.push(bytes);
+    if let Some(result) = decoder.finish() {
+        messages.push(result);
+    }
+    messages
+}
+
 impl UdpGdl90Receiver {
     pub fn bind(bind_addr: impl ToSocketAddrs) -> Result<Self> {
         let socket = UdpSocket::bind(bind_addr).map_err(|error| Gdl90Error::Io {
@@ -167,7 +178,6 @@ impl UdpGdl90Receiver {
         })?;
         Ok(Self {
             socket,
-            decoder: FrameMessageDecoder::new(),
             max_datagram_size: DEFAULT_MAX_DATAGRAM_SIZE,
         })
     }
@@ -197,7 +207,9 @@ impl UdpGdl90Receiver {
     }
 
     pub fn receive(&mut self) -> Result<UdpDatagram> {
-        let mut buffer = vec![0u8; self.max_datagram_size];
+        // One extra byte converts platform-level UDP truncation into an explicit
+        // over-limit error instead of silently accepting a prefix.
+        let mut buffer = vec![0u8; self.max_datagram_size.saturating_add(1)];
         let (len, source) = self
             .socket
             .recv_from(&mut buffer)
@@ -205,11 +217,17 @@ impl UdpGdl90Receiver {
                 context: "receive UDP datagram",
                 details: error.to_string(),
             })?;
+        if len > self.max_datagram_size {
+            return Err(Gdl90Error::DatagramTooLarge {
+                limit: self.max_datagram_size,
+                actual: len,
+            });
+        }
         buffer.truncate(len);
 
         Ok(UdpDatagram {
             source,
-            messages: self.decoder.push(&buffer),
+            messages: decode_datagram(&buffer),
             bytes: buffer,
         })
     }
@@ -230,13 +248,19 @@ pub fn discover_foreflight_once(
             details: error.to_string(),
         })?;
 
-    let mut buffer = [0u8; DEFAULT_MAX_DATAGRAM_SIZE];
+    let mut buffer = [0u8; DEFAULT_MAX_DATAGRAM_SIZE + 1];
     let (len, source) = socket
         .recv_from(&mut buffer)
         .map_err(|error| Gdl90Error::Io {
             context: "receive ForeFlight discovery datagram",
             details: error.to_string(),
         })?;
+    if len > DEFAULT_MAX_DATAGRAM_SIZE {
+        return Err(Gdl90Error::DatagramTooLarge {
+            limit: DEFAULT_MAX_DATAGRAM_SIZE,
+            actual: len,
+        });
+    }
     let text = std::str::from_utf8(&buffer[..len]).map_err(|_| Gdl90Error::Utf8 {
         field: "ForeFlight discovery datagram",
     })?;
@@ -261,6 +285,7 @@ fn first_socket_addr(addrs: impl ToSocketAddrs, context: &'static str) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::{FLAG_BYTE, encode_frame};
     use crate::message::{Heartbeat, HeartbeatStatus};
 
     fn heartbeat() -> Message {
@@ -334,6 +359,33 @@ mod tests {
         assert!(
             matches!(error, Gdl90Error::InvalidField { field, .. } if field == "ForeFlight supported message set")
         );
+    }
+
+    #[test]
+    fn datagram_boundaries_do_not_share_decoder_state() {
+        let first = decode_datagram(&[FLAG_BYTE, 0x00]);
+        assert!(matches!(first.as_slice(), [Err(Gdl90Error::FrameTooShort)]));
+
+        let frame = encode_frame(&heartbeat().encode().unwrap());
+        let second = decode_datagram(&frame[1..]);
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn receiver_detects_datagrams_larger_than_its_limit() {
+        let mut receiver = UdpGdl90Receiver::bind("127.0.0.1:0").unwrap();
+        receiver.set_max_datagram_size(8);
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender
+            .send_to(&[0u8; 9], receiver.local_addr().unwrap())
+            .unwrap();
+        assert!(matches!(
+            receiver.receive(),
+            Err(Gdl90Error::DatagramTooLarge {
+                limit: 8,
+                actual: 9
+            })
+        ));
     }
 
     #[test]

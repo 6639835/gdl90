@@ -86,7 +86,8 @@ pub fn analyze_datagrams(datagrams: &[RecordedDatagram]) -> SessionAnalysis {
     analysis
 }
 
-pub fn validate_datagrams(datagrams: &[RecordedDatagram]) -> SessionValidation {
+/// Performs syntactic frame/message decoding only; it is not an interoperability or certification check.
+pub fn validate_datagrams_syntax(datagrams: &[RecordedDatagram]) -> SessionValidation {
     let mut issues = Vec::new();
     let mut valid_datagram_count = 0usize;
 
@@ -122,4 +123,9 @@ pub fn validate_datagrams(datagrams: &[RecordedDatagram]) -> SessionValidation {
         invalid_datagram_count: datagrams.len().saturating_sub(valid_datagram_count),
         issues,
     }
+}
+
+/// Backward-compatible alias for syntactic validation.
+pub fn validate_datagrams(datagrams: &[RecordedDatagram]) -> SessionValidation {
+    validate_datagrams_syntax(datagrams)
 }

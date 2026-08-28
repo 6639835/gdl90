@@ -3,6 +3,102 @@ use crate::util::{
     decode_ascii_digits, encode_ascii_digits, encode_call_sign as encode_fixed_call_sign,
     hex_checksum, parse_hex_byte,
 };
+use std::time::Duration;
+
+pub const CONTROL_MODE_INTERVAL: Duration = Duration::from_secs(1);
+pub const CONTROL_CALL_SIGN_INTERVAL: Duration = Duration::from_secs(60);
+pub const CONTROL_VFR_CODE_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlCadenceProfile {
+    pub mode_interval: Duration,
+    pub call_sign_interval: Duration,
+    pub vfr_code_interval: Duration,
+}
+
+impl ControlCadenceProfile {
+    pub fn validate(self) -> Result<Self> {
+        if self.mode_interval.is_zero()
+            || self.call_sign_interval.is_zero()
+            || self.vfr_code_interval.is_zero()
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "control cadence profile",
+                details: "all intervals must be greater than zero".to_string(),
+            });
+        }
+        Ok(self)
+    }
+}
+
+pub fn cadence_profile() -> ControlCadenceProfile {
+    ControlCadenceProfile {
+        mode_interval: CONTROL_MODE_INTERVAL,
+        call_sign_interval: CONTROL_CALL_SIGN_INTERVAL,
+        vfr_code_interval: CONTROL_VFR_CODE_INTERVAL,
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ControlCadenceDue {
+    pub mode: bool,
+    pub call_sign: bool,
+    pub vfr_code: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ControlCadenceScheduler {
+    profile: ControlCadenceProfile,
+    next_mode: Duration,
+    next_call_sign: Duration,
+    next_vfr_code: Duration,
+    call_sign_changed: bool,
+}
+
+impl ControlCadenceScheduler {
+    pub fn new(start: Duration) -> Self {
+        Self {
+            profile: cadence_profile(),
+            next_mode: start,
+            next_call_sign: start,
+            next_vfr_code: start,
+            call_sign_changed: false,
+        }
+    }
+
+    pub fn with_profile(start: Duration, profile: ControlCadenceProfile) -> Result<Self> {
+        Ok(Self {
+            profile: profile.validate()?,
+            next_mode: start,
+            next_call_sign: start,
+            next_vfr_code: start,
+            call_sign_changed: false,
+        })
+    }
+
+    pub fn mark_call_sign_changed(&mut self) {
+        self.call_sign_changed = true;
+    }
+
+    pub fn poll(&mut self, now: Duration) -> ControlCadenceDue {
+        let due = ControlCadenceDue {
+            mode: now >= self.next_mode,
+            call_sign: self.call_sign_changed || now >= self.next_call_sign,
+            vfr_code: now >= self.next_vfr_code,
+        };
+        if due.mode {
+            self.next_mode = now.saturating_add(self.profile.mode_interval);
+        }
+        if due.call_sign {
+            self.next_call_sign = now.saturating_add(self.profile.call_sign_interval);
+            self.call_sign_changed = false;
+        }
+        if due.vfr_code {
+            self.next_vfr_code = now.saturating_add(self.profile.vfr_code_interval);
+        }
+        due
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlMode {
@@ -268,4 +364,63 @@ fn verify_checksum(
         return Err(Gdl90Error::ControlChecksumMismatch { expected, actual });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_cadence_matches_garmin_intervals_and_change_trigger() {
+        let mut scheduler = ControlCadenceScheduler::new(Duration::ZERO);
+        assert_eq!(
+            scheduler.poll(Duration::ZERO),
+            ControlCadenceDue {
+                mode: true,
+                call_sign: true,
+                vfr_code: true,
+            }
+        );
+        assert_eq!(
+            scheduler.poll(Duration::from_millis(999)),
+            ControlCadenceDue::default()
+        );
+        assert!(scheduler.poll(Duration::from_secs(1)).mode);
+        scheduler.mark_call_sign_changed();
+        assert!(scheduler.poll(Duration::from_secs(2)).call_sign);
+        let minute = scheduler.poll(Duration::from_secs(60));
+        assert!(minute.mode);
+        assert!(minute.vfr_code);
+        assert!(!minute.call_sign);
+        assert!(scheduler.poll(Duration::from_secs(62)).call_sign);
+    }
+
+    #[test]
+    fn control_cadence_profile_rejects_zero_intervals() {
+        let valid = cadence_profile();
+        let invalid = [
+            ControlCadenceProfile {
+                mode_interval: Duration::ZERO,
+                ..valid
+            },
+            ControlCadenceProfile {
+                call_sign_interval: Duration::ZERO,
+                ..valid
+            },
+            ControlCadenceProfile {
+                vfr_code_interval: Duration::ZERO,
+                ..valid
+            },
+        ];
+
+        for profile in invalid {
+            assert!(matches!(
+                ControlCadenceScheduler::with_profile(Duration::ZERO, profile),
+                Err(Gdl90Error::InvalidField {
+                    field: "control cadence profile",
+                    ..
+                })
+            ));
+        }
+    }
 }

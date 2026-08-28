@@ -31,25 +31,25 @@ Rust library and CLI for encoding, decoding, transporting, recording, and analyz
   - VFR Code
 - UAT uplink parsing and encoding for the documented structures
   - Rev A information frames
-  - APDU headers, civil-time variants, reserved-bit validation, and segmentation metadata
-  - stateful product-file reassembly across uplink messages
+  - minimal APDU headers, civil-time variants, and segmentation metadata
+  - bounded, source- and generation-scoped product-file reassembly
   - out-of-order and duplicate-segment handling
   - TWGO repeated-header removal for products 8 and 11–17
   - Generic Text APDUs, whole-record packing, and exact six-bit DLAC encode/decode
   - DLAC control codes and code-28 run-length spaces
   - NEXRAD APDUs and block payloads
-  - named, lossless raw preservation for product schemas outside Garmin Rev A
+  - lossless raw preservation for optional descriptors and product schemas outside Garmin Rev A
 - Session tooling
   - read, write, and append recorded UDP datagram files
   - decode, validate, report, capture, and replay session traffic
 - Analysis and reporting
   - per-session summaries
-  - datagram validation with issue reporting
+  - syntactic datagram validation with issue reporting
   - detailed text and JSON reports
 - Support/status helpers
   - Garmin ICD section coverage matrix
   - RS-422 bus profile and connector mapping
-  - control-panel serial profiles and connector mapping
+  - control-panel serial profiles, connector mapping, and cadence scheduling
 - Bandwidth scheduling helpers
   - byte-budget calculation
   - message prioritization across heartbeat, ownship, traffic, and uplinks
@@ -85,6 +85,8 @@ tests/
 ```
 
 ## Quick start
+
+The declared minimum supported Rust version is **1.88** and is checked in CI.
 
 ```rust
 use gdl90::{Heartbeat, HeartbeatStatus, Message};
@@ -202,27 +204,37 @@ Session files are plain text with one UDP datagram per line:
 Verified in this repository with:
 
 ```bash
-cargo fmt --check
-cargo test
+cargo fmt --all -- --check
+cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
+cargo check --manifest-path fuzz/Cargo.toml --all-targets
 ```
 
-## Protocol scope and completion
+## Protocol scope and production status
 
-The built-in support matrix has no incomplete entries for behavior defined by the Garmin GDL 90 Public ICD Rev A. The uplink implementation now includes variable APDU headers, one-based segmentation metadata, stateful reassembly, TWGO repeated-header handling, and the full FIS-B DLAC code table.
+This crate implements a substantial and tested subset of Garmin GDL90 Rev A and the ForeFlight extension, but it does **not** claim certification, safety-of-flight suitability, or complete conformance to external RTCA and FAA product specifications.
 
-- I-Frame type handling is strict to Rev A Table 18: `0x0` is FIS-B APDU, `0xF` is developmental, and `0x1..=0xE` are reserved.
-- The historical APDU A/G/P positions are treated as reserved bits in the operational UAT/FIS-B profile and must be zero.
-- Generic Text Type 2 and NEXRAD Global Block Representation payloads—the product schemas contained in Rev A—are decoded and encoded.
-- Other FAA/FIS-B registry product IDs are named where known and preserve their exact APDU header and payload bytes. Schemas not contained in Rev A are intentionally not guessed.
-- `ApduReassembler` is stateful by design. Applications decide when to discard incomplete product files according to their own receive-window or timeout policy.
+The production hardening in this repository includes:
 
-Inspect the built-in support matrix with:
+- bounded streaming frames, UDP datagrams, session files, and APDU reassembly state
+- independent decoding for each UDP datagram and source-scoped APDU reassembly APIs
+- strict Basic/Long pass-through payload-type validation with no reporting panic path
+- strict Garmin VFOM behavior plus an explicit ForeFlight compatibility mode
+- Garmin-required zero-fill validation for unused UAT Application Data
+- lossless preservation of optional Product Descriptor APDUs that cannot be decoded from the public ICD alone
+- IP-version-aware ForeFlight UDP payload limits plus deterministic AHRS, discovery, and control-panel cadence schedulers
+- fallible bandwidth configuration and checked byte accounting
+- CI, adversarial parser tests, and scheduled fuzzing targets
 
-```bash
-cargo run --bin gdl90 -- support-status
-cargo run --bin gdl90 -- support-status --missing
-```
+Known boundaries are intentionally reported by `support-status --missing`:
+
+- physical RS-422/RS-232 drivers and certified installation behavior are not implemented
+- complete Basic/Long UAT semantics require RTCA/DO-282
+- complete APDU/Product Descriptor and FIS-B product semantics require RTCA/DO-267A and the FAA FIS-B Product Registry
+- real ForeFlight interoperability still requires testing against supported iOS/iPadOS releases and representative networks
+
+See `docs/CONFORMANCE.md`, `docs/PRODUCTION_READINESS.md`, and `SECURITY.md` before embedding this crate in operational equipment.
 
 ## License
 
