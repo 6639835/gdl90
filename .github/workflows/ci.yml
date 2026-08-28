@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -26,3 +28,13 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Compile fuzz targets
         run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88
+      - name: Check minimum supported Rust version
+        run: cargo check --all-targets
