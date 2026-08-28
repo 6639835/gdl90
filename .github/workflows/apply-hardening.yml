@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -36,8 +37,10 @@ jobs:
         run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
       - name: Commit verified patch
         run: |
+          rm -rf fuzz/target
           rm -rf scripts/hardening
-          rm -f .github/workflows/apply-hardening.yml
+          rm -f .github/workflows/ci.yml .github/workflows/fuzz.yml
+          grep -qxF '/fuzz/target/' .gitignore || printf '\n/fuzz/target/\n' >> .gitignore
           if git diff --quiet && git diff --cached --quiet; then
             echo "No generated changes"
             exit 0
