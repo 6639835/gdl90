@@ -276,6 +276,13 @@ impl ForeFlightIdMessage {
                 details: format!("{} is not the documented version 1", self.version),
             });
         }
+        if self.device_serial_number == Some(u64::MAX) {
+            return Err(Gdl90Error::InvalidField {
+                field: "ForeFlight ID serial number",
+                details: "0xFFFFFFFFFFFFFFFF is reserved for an unavailable serial number"
+                    .to_string(),
+            });
+        }
         self.capabilities.validate()
     }
 
@@ -444,34 +451,53 @@ impl ForeFlightAhrsMessage {
             "AHRS pitch",
         )?);
         let heading = if let Some(heading) = self.heading {
-            if !(0..=3600).contains(&heading.tenths_degrees) {
-                return Err(Gdl90Error::InvalidField {
-                    field: "AHRS heading",
-                    details: format!("{} is outside [0, 3600]", heading.tenths_degrees),
-                });
-            }
+            let normalized = normalize_heading_tenths_degrees(heading.tenths_degrees)?;
             let type_bit = match heading.heading_type {
                 HeadingType::True => 0u16,
                 HeadingType::Magnetic => 0x8000,
             };
-            type_bit | (heading.tenths_degrees as u16 & 0x7FFF)
+            type_bit | normalized
         } else {
             0xFFFF
         };
         out.extend_from_slice(&heading.to_be_bytes());
-        out.extend_from_slice(
-            &self
-                .indicated_airspeed_knots
-                .unwrap_or(0xFFFF)
-                .to_be_bytes(),
-        );
-        out.extend_from_slice(&self.true_airspeed_knots.unwrap_or(0xFFFF).to_be_bytes());
+        out.extend_from_slice(&encode_optional_u16(
+            self.indicated_airspeed_knots,
+            "AHRS indicated airspeed",
+        )?);
+        out.extend_from_slice(&encode_optional_u16(
+            self.true_airspeed_knots,
+            "AHRS true airspeed",
+        )?);
         Ok(out)
     }
 }
 
 fn decode_optional_u16(value: u16) -> Option<u16> {
     if value == 0xFFFF { None } else { Some(value) }
+}
+
+fn encode_optional_u16(value: Option<u16>, field: &'static str) -> Result<[u8; 2]> {
+    if value == Some(u16::MAX) {
+        return Err(Gdl90Error::InvalidField {
+            field,
+            details: "0xFFFF is reserved for an unavailable value".to_string(),
+        });
+    }
+    Ok(value.unwrap_or(u16::MAX).to_be_bytes())
+}
+
+/// ForeFlight publishes an accepted range of -360.0 through +360.0 degrees,
+/// but allocates all 15 value bits to an unsigned heading. Negative API inputs
+/// are therefore canonicalized to their equivalent positive angular heading.
+fn normalize_heading_tenths_degrees(value: i16) -> Result<u16> {
+    if !(-3600..=3600).contains(&value) {
+        return Err(Gdl90Error::InvalidField {
+            field: "AHRS heading",
+            details: format!("{value} is outside [-3600, 3600]"),
+        });
+    }
+    Ok(if value < 0 { value + 3600 } else { value } as u16)
 }
 
 fn decode_optional_signed_range(
@@ -613,5 +639,113 @@ mod tests {
             scheduler.poll(Duration::from_secs(10)),
             ForeFlightCadenceDue::default()
         );
+    }
+
+    #[test]
+    fn negative_headings_are_accepted_and_canonicalized() {
+        let message = ForeFlightAhrsMessage {
+            roll_tenths_degrees: None,
+            pitch_tenths_degrees: None,
+            heading: Some(Heading {
+                heading_type: HeadingType::Magnetic,
+                tenths_degrees: -10,
+            }),
+            indicated_airspeed_knots: None,
+            true_airspeed_knots: None,
+        };
+        let encoded = message.encode().unwrap();
+        assert_eq!(u16::from_be_bytes([encoded[6], encoded[7]]) & 0x7FFF, 3590);
+        assert_eq!(
+            ForeFlightAhrsMessage::decode(&encoded)
+                .unwrap()
+                .heading
+                .unwrap()
+                .tenths_degrees,
+            3590
+        );
+
+        let mut invalid = message;
+        invalid.heading.as_mut().unwrap().tenths_degrees = -3601;
+        assert!(matches!(
+            invalid.encode(),
+            Err(Gdl90Error::InvalidField {
+                field: "AHRS heading",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn foreflight_invalid_sentinels_cannot_be_encoded_as_real_values() {
+        let id = ForeFlightIdMessage {
+            version: 1,
+            device_serial_number: Some(u64::MAX),
+            device_name: "GDL90".to_string(),
+            device_long_name: "GDL90".to_string(),
+            capabilities: ForeFlightCapabilities {
+                geometric_altitude_datum: GeometricAltitudeDatum::Wgs84Ellipsoid,
+                internet_policy: InternetPolicy::Unrestricted,
+                reserved_bits: 0,
+            },
+        };
+        assert!(matches!(
+            id.encode(),
+            Err(Gdl90Error::InvalidField {
+                field: "ForeFlight ID serial number",
+                ..
+            })
+        ));
+
+        let ahrs = ForeFlightAhrsMessage {
+            roll_tenths_degrees: None,
+            pitch_tenths_degrees: None,
+            heading: None,
+            indicated_airspeed_knots: Some(u16::MAX),
+            true_airspeed_knots: None,
+        };
+        assert!(matches!(
+            ahrs.encode(),
+            Err(Gdl90Error::InvalidField {
+                field: "AHRS indicated airspeed",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn foreflight_names_reject_embedded_nul_and_nonzero_trailing_padding() {
+        let message = ForeFlightIdMessage {
+            version: 1,
+            device_serial_number: None,
+            device_name: "A\0B".to_string(),
+            device_long_name: "GDL90".to_string(),
+            capabilities: ForeFlightCapabilities {
+                geometric_altitude_datum: GeometricAltitudeDatum::Wgs84Ellipsoid,
+                internet_policy: InternetPolicy::Unrestricted,
+                reserved_bits: 0,
+            },
+        };
+        assert!(matches!(
+            message.encode(),
+            Err(Gdl90Error::InvalidField {
+                field: "device name",
+                ..
+            })
+        ));
+
+        let mut raw = ForeFlightIdMessage {
+            device_name: "A".to_string(),
+            ..message
+        }
+        .encode()
+        .unwrap();
+        raw[13] = b'B';
+        assert!(matches!(
+            ForeFlightIdMessage::decode(&raw),
+            Err(Gdl90Error::InvalidField {
+                field: "device name",
+                ..
+            })
+        ));
     }
 }

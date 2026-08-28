@@ -1,4 +1,3 @@
-
 # Conformance scope
 
 ## Normative sources
@@ -17,13 +16,15 @@ Garmin Rev A delegates portions of Basic/Long UAT payloads and FIS-B product enc
 - Streaming frame and UDP input paths have explicit memory limits and recover after malformed input.
 - Each UDP datagram is decoded independently; bytes from separate datagrams or sources are never combined.
 - Unused UAT Application Data must be zero-filled.
-- APDU reassembly is bounded by file count, byte count, segment count, age, and caller-supplied source identity.
+- APDU reassembly is bounded by file count, byte count, segment count, age, source identity, and APDU generation time.
 - Optional Product Descriptor forms are preserved losslessly instead of being rejected or guessed.
 - ForeFlight payload budgets account for minimum IPv4/IPv6 and UDP headers so the complete packet remains below 1500 bytes.
 
 ## Explicit compatibility decisions
 
-Garmin Rev A assigns `0x7FFE` to geometric VFOM greater than 32766 m. ForeFlight's published page currently shows `0x7EEE`. Strict decoding follows Garmin. `decode_foreflight_compatible` and `encode_for_foreflight` make the conflicting legacy behavior opt-in and testable.
+Garmin Rev A assigns `0x7FFE` to geometric VFOM greater than 32766 m. ForeFlight's published page currently shows `0x7EEE`. Strict decoding follows Garmin. `decode_foreflight_compatible` and `encode_for_foreflight` make the conflicting legacy behavior opt-in and reject numeric values that collide with the ForeFlight sentinel.
+
+ForeFlight publishes an AHRS heading input range of -360.0 through +360.0 degrees while allocating bits 14–0 to the heading value without defining a signed representation. Encoding accepts that published API range and canonicalizes negative angles to their equivalent positive heading; decoding returns the canonical nonnegative wire value. This behavior remains marked `Partial` until representative-device interoperability confirms the interpretation.
 
 ## Evidence policy
 

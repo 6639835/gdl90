@@ -737,9 +737,51 @@ impl CurrentReportListItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueApdu {
-    pub product_id: u16,
-    pub descriptor_flags: u8,
-    pub raw: Vec<u8>,
+    product_id: u16,
+    descriptor_flags: u8,
+    raw: Vec<u8>,
+}
+
+impl OpaqueApdu {
+    pub fn from_raw(raw: Vec<u8>) -> Result<Self> {
+        if raw.len() < MIN_APDU_HEADER_LEN || raw.len() > MAX_APDU_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "opaque APDU",
+                expected: "4..=422 bytes",
+                actual: raw.len(),
+            });
+        }
+        let descriptor_flags = raw[0] >> 5;
+        if descriptor_flags == 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "opaque APDU descriptor flags",
+                details: "zero flags describe the semantically parsed minimal APDU form"
+                    .to_string(),
+            });
+        }
+        let product_id = (u16::from(raw[0] & 0x1F) << 6) | u16::from(raw[1] >> 2);
+        Ok(Self {
+            product_id,
+            descriptor_flags,
+            raw,
+        })
+    }
+
+    pub fn product_id(&self) -> u16 {
+        self.product_id
+    }
+
+    pub fn descriptor_flags(&self) -> u8 {
+        self.descriptor_flags
+    }
+
+    pub fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+
+    pub fn into_raw(self) -> Vec<u8> {
+        self.raw
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -766,38 +808,26 @@ impl ApduPayload {
         }
 
         let descriptor_flags = bytes[0] >> 5;
-        let product_id = (u16::from(bytes[0] & 0x1F) << 6) | u16::from(bytes[1] >> 2);
         if descriptor_flags == 0 {
             Ok(Self::Parsed(Apdu::decode(bytes)?))
         } else {
-            Ok(Self::OpaqueOptionalDescriptor(OpaqueApdu {
-                product_id,
-                descriptor_flags,
-                raw: bytes.to_vec(),
-            }))
+            Ok(Self::OpaqueOptionalDescriptor(OpaqueApdu::from_raw(
+                bytes.to_vec(),
+            )?))
         }
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
         match self {
             Self::Parsed(apdu) => apdu.encode(),
-            Self::OpaqueOptionalDescriptor(apdu) => {
-                if apdu.raw.len() < MIN_APDU_HEADER_LEN || apdu.raw.len() > MAX_APDU_LEN {
-                    return Err(Gdl90Error::InvalidLength {
-                        context: "opaque APDU",
-                        expected: "4..=422 bytes",
-                        actual: apdu.raw.len(),
-                    });
-                }
-                Ok(apdu.raw.clone())
-            }
+            Self::OpaqueOptionalDescriptor(apdu) => Ok(apdu.raw().to_vec()),
         }
     }
 
     pub fn product_id(&self) -> u16 {
         match self {
             Self::Parsed(apdu) => apdu.header.product_id,
-            Self::OpaqueOptionalDescriptor(apdu) => apdu.product_id,
+            Self::OpaqueOptionalDescriptor(apdu) => apdu.product_id(),
         }
     }
 }

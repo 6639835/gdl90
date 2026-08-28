@@ -415,8 +415,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4.3.2",
             "APDU Payload",
-            SupportState::Complete,
-            "Independent payloads are preserved losslessly and segmented product files are reassembled across uplink messages, including TWGO repeated-header removal and retransmission validation.",
+            SupportState::Partial,
+            "Independent payload bytes are preserved and bounded reassembly is implemented; complete product-specific payload semantics depend on external FAA/RTCA definitions.",
         ),
         support_entry(
             "4.4",
@@ -427,14 +427,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4.4.1",
             "Textual METAR and TAF Products",
-            SupportState::Complete,
-            "Generic Text APDUs implement the complete six-bit DLAC table, run-length spaces, control boundaries, record packing, and METAR/TAF composition validation.",
+            SupportState::BlockedByExternalSpec,
+            "The public examples and implemented DLAC codec are tested, but complete product conformance depends on RTCA/DO-267A and the FAA registry.",
         ),
         support_entry(
             "4.4.2",
             "NEXRAD Graphic Product",
-            SupportState::Complete,
-            "NEXRAD APDUs decode run-length and empty-element blocks, typed intensity semantics, and geographic block bounds from the block reference indicator.",
+            SupportState::BlockedByExternalSpec,
+            "The Garmin examples, run-length blocks, and preserved unknown forms are implemented; full Global Block Representation semantics are externally defined.",
         ),
         support_entry(
             "4.5",
@@ -451,14 +451,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "5.1",
             "Type 4 NEXRAD Precipitation Image – Global Block Representation",
-            SupportState::Complete,
-            "Type 4 NEXRAD payloads decode run-length and empty-element forms, block-reference scale, and geographic bounds for individual GBR blocks.",
+            SupportState::BlockedByExternalSpec,
+            "Garmin does not reproduce the complete copyrighted GBR definition; public examples are decoded while unsupported forms remain lossless.",
         ),
         support_entry(
             "5.1.1",
             "Definition",
-            SupportState::Complete,
-            "The Global Block Representation carried by the Garmin examples and ETSO amendments is implemented, including scale-aware block geometry.",
+            SupportState::BlockedByExternalSpec,
+            "The complete Global Block Representation definition is outside the Garmin public ICD.",
         ),
         support_entry(
             "5.1.2",
@@ -469,8 +469,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "5.1.3",
             "APDU Payload Format",
-            SupportState::Complete,
-            "The documented APDU header constraints, block reference indicator, run-length blocks, and empty-element bitmap form are implemented.",
+            SupportState::BlockedByExternalSpec,
+            "Public header and example forms are implemented, but the complete payload format is delegated to external specifications.",
         ),
         support_entry(
             "5.1.4",
@@ -481,26 +481,26 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "5.2",
             "Generic Textual Data Product – Type 2 (DLAC)",
-            SupportState::Complete,
-            "Generic Text records, exact six-bit DLAC packing, code-28 run-length spaces, control characters, whole-record APDU packing, and METAR/TAF composition are implemented.",
+            SupportState::BlockedByExternalSpec,
+            "The public examples and implemented record codec are tested; the normative DLAC/product definitions remain external.",
         ),
         support_entry(
             "5.2.1",
             "Definition",
-            SupportState::Complete,
-            "The Generic Text Type 2 record model and every DLAC code position used by the FIS-B profile are implemented.",
+            SupportState::BlockedByExternalSpec,
+            "The complete Generic Text Type 2 and DLAC definitions are referenced to external RTCA material.",
         ),
         support_entry(
             "5.2.2",
             "APDU Payload Format",
-            SupportState::Complete,
-            "Generic Text APDU payload packing and decoding implement ETX padding, SUB/NC handling, record separators, line feeds, pipe, printable characters, and run-length spaces.",
+            SupportState::BlockedByExternalSpec,
+            "The implemented payload codec covers public examples, but complete normative character and packing behavior is externally controlled.",
         ),
         support_entry(
             "5.2.3",
             "METAR / TAF Composition",
-            SupportState::Complete,
-            "METAR/TAF token structure, qualifiers, NIL handling, non-empty report text, and whole-record validation are implemented.",
+            SupportState::Partial,
+            "The public token structure and examples are validated; the FAA product registry remains authoritative for complete composition rules.",
         ),
         support_entry(
             "5.2.4",
@@ -512,7 +512,7 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
             "6",
             "Control Panel Interface",
             SupportState::Partial,
-            "ASCII message codecs and cadence metadata are implemented; physical serial transport and certified equipment integration are not provided.",
+            "ASCII codecs and deterministic one-second/one-minute cadence scheduling are implemented; physical serial transport and certified equipment integration are not provided.",
         ),
         support_entry(
             "6.1",
@@ -559,8 +559,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "ForeFlight Messages",
             "ForeFlight Message Set",
-            SupportState::Complete,
-            "The documented supported-message subset and UDP datagram encoding rules are implemented.",
+            SupportState::Partial,
+            "The supported subset and packet rules are implemented, with explicit compatibility handling for published VFOM and heading ambiguities.",
         ),
         support_entry(
             "ForeFlight Heartbeat",
@@ -583,8 +583,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "ForeFlight Geo Altitude",
             "ForeFlight Ownship Geometric Altitude",
-            SupportState::Complete,
-            "Ownship geometric altitude is supported through the core GDL90 codec and the ForeFlight capabilities mask handling.",
+            SupportState::Partial,
+            "Garmin and ForeFlight publish conflicting greater-than VFOM sentinels; strict and opt-in compatibility modes are implemented pending device interoperability evidence.",
         ),
         support_entry(
             "ForeFlight Traffic",
@@ -601,8 +601,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "ForeFlight AHRS",
             "ForeFlight AHRS Message",
-            SupportState::Complete,
-            "AHRS encode/decode covers roll, pitch, heading type, IAS, TAS, invalid sentinels, and range validation.",
+            SupportState::Partial,
+            "Roll, pitch, heading type, airspeeds, sentinels, and cadence are implemented. Negative heading inputs are angle-canonicalized because the published wire field does not define a signed encoding.",
         ),
     ]
 }
@@ -660,7 +660,20 @@ mod tests {
     #[test]
     fn support_matrix_exposes_known_external_and_transport_boundaries() {
         let missing = missing_sections();
-        for section in ["2.1", "3.6", "4.3.1", "4.4", "6.1"] {
+        for section in [
+            "2.1",
+            "3.6",
+            "4.3.1",
+            "4.3.2",
+            "4.4",
+            "4.4.1",
+            "4.4.2",
+            "5.1",
+            "5.2",
+            "6.1",
+            "ForeFlight Geo Altitude",
+            "ForeFlight AHRS",
+        ] {
             assert!(missing.iter().any(|entry| entry.section == section));
         }
     }

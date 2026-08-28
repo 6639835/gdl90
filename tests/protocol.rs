@@ -497,13 +497,13 @@ fn foreflight_id_decode_rejects_invalid_version_and_reserved_capabilities() {
 }
 
 #[test]
-fn foreflight_ahrs_heading_rejects_negative_values_on_encode() {
+fn foreflight_ahrs_heading_rejects_only_values_outside_the_published_range() {
     let error = Message::ForeFlightAhrs(ForeFlightAhrsMessage {
         roll_tenths_degrees: None,
         pitch_tenths_degrees: None,
         heading: Some(Heading {
             heading_type: HeadingType::True,
-            tenths_degrees: -1,
+            tenths_degrees: -3601,
         }),
         indicated_airspeed_knots: None,
         true_airspeed_knots: None,
@@ -2072,8 +2072,8 @@ fn optional_product_descriptors_are_preserved_losslessly() {
     let decoded = ApduPayload::decode(&raw).unwrap();
     match &decoded {
         ApduPayload::OpaqueOptionalDescriptor(opaque) => {
-            assert_eq!(opaque.descriptor_flags, 0b101);
-            assert_eq!(opaque.raw, raw);
+            assert_eq!(opaque.descriptor_flags(), 0b101);
+            assert_eq!(opaque.raw(), raw.as_slice());
         }
         other => panic!("expected opaque optional descriptor, got {other:?}"),
     }
@@ -2130,4 +2130,55 @@ fn reassembly_is_bounded_scoped_and_expiring() {
     assert_eq!(reassembler.expire_at(start + Duration::from_secs(2)), 2);
     assert_eq!(reassembler.pending_file_count(), 0);
     assert_eq!(reassembler.buffered_bytes(), 0);
+}
+
+#[test]
+fn unavailable_sentinels_cannot_be_constructed_as_real_garmin_values() {
+    let height = HeightAboveTerrain {
+        feet: Some(i16::MIN),
+    };
+    assert!(matches!(
+        height.encode(),
+        Err(gdl90::Gdl90Error::InvalidField {
+            field: "height above terrain",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn foreflight_vfom_compatibility_preserves_noncolliding_numeric_values() {
+    let numeric = OwnshipGeometricAltitude {
+        altitude_feet: 0,
+        vertical_warning: false,
+        vertical_figure_of_merit: VerticalFigureOfMerit::Meters(0x7EEF),
+    };
+    let encoded = numeric.encode_for_foreflight().unwrap();
+    assert_eq!(
+        u16::from_be_bytes([encoded[3], encoded[4]]) & 0x7FFF,
+        0x7EEF
+    );
+
+    let collision = OwnshipGeometricAltitude {
+        vertical_figure_of_merit: VerticalFigureOfMerit::Meters(0x7EEE),
+        ..numeric
+    };
+    assert!(matches!(
+        collision.encode_for_foreflight(),
+        Err(gdl90::Gdl90Error::InvalidField {
+            field: "ForeFlight VFOM numeric value",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn opaque_apdu_constructor_rejects_the_minimal_descriptor_form() {
+    assert!(matches!(
+        gdl90::OpaqueApdu::from_raw(vec![0, 0, 0, 0]),
+        Err(gdl90::Gdl90Error::InvalidField {
+            field: "opaque APDU descriptor flags",
+            ..
+        })
+    ));
 }

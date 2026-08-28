@@ -31,25 +31,25 @@ Rust library and CLI for encoding, decoding, transporting, recording, and analyz
   - VFR Code
 - UAT uplink parsing and encoding for the documented structures
   - Rev A information frames
-  - APDU headers, civil-time variants, reserved-bit validation, and segmentation metadata
-  - stateful product-file reassembly across uplink messages
+  - minimal APDU headers, civil-time variants, and segmentation metadata
+  - bounded, source- and generation-scoped product-file reassembly
   - out-of-order and duplicate-segment handling
   - TWGO repeated-header removal for products 8 and 11–17
   - Generic Text APDUs, whole-record packing, and exact six-bit DLAC encode/decode
   - DLAC control codes and code-28 run-length spaces
   - NEXRAD APDUs and block payloads
-  - named, lossless raw preservation for product schemas outside Garmin Rev A
+  - lossless raw preservation for optional descriptors and product schemas outside Garmin Rev A
 - Session tooling
   - read, write, and append recorded UDP datagram files
   - decode, validate, report, capture, and replay session traffic
 - Analysis and reporting
   - per-session summaries
-  - datagram validation with issue reporting
+  - syntactic datagram validation with issue reporting
   - detailed text and JSON reports
 - Support/status helpers
   - Garmin ICD section coverage matrix
   - RS-422 bus profile and connector mapping
-  - control-panel serial profiles and connector mapping
+  - control-panel serial profiles, connector mapping, and cadence scheduling
 - Bandwidth scheduling helpers
   - byte-budget calculation
   - message prioritization across heartbeat, ownship, traffic, and uplinks
@@ -202,9 +202,11 @@ Session files are plain text with one UDP datagram per line:
 Verified in this repository with:
 
 ```bash
-cargo fmt --check
-cargo test
+cargo fmt --all -- --check
+cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
+cargo check --manifest-path fuzz/Cargo.toml --all-targets
 ```
 
 ## Protocol scope and production status
@@ -214,12 +216,12 @@ This crate implements a substantial and tested subset of Garmin GDL90 Rev A and 
 The production hardening in this repository includes:
 
 - bounded streaming frames, UDP datagrams, session files, and APDU reassembly state
-- independent decoding for each UDP datagram and source-safe APDU reassembly APIs
+- independent decoding for each UDP datagram and source-scoped APDU reassembly APIs
 - strict Basic/Long pass-through payload-type validation with no reporting panic path
 - strict Garmin VFOM behavior plus an explicit ForeFlight compatibility mode
 - Garmin-required zero-fill validation for unused UAT Application Data
 - lossless preservation of optional Product Descriptor APDUs that cannot be decoded from the public ICD alone
-- IP-version-aware ForeFlight UDP payload limits and a deterministic 5 Hz AHRS cadence scheduler
+- IP-version-aware ForeFlight UDP payload limits plus deterministic AHRS, discovery, and control-panel cadence schedulers
 - fallible bandwidth configuration and checked byte accounting
 - CI, adversarial parser tests, and scheduled fuzzing targets
 

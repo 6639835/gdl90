@@ -1,4 +1,3 @@
-
 # Production readiness
 
 ## What this repository now protects
@@ -19,6 +18,8 @@ The embedding application must still provide:
 - network-interface change handling, discovery lifecycle, logging, metrics, and shutdown behavior
 - serial drivers and installation-specific electrical validation when RS-422/RS-232 is required
 - reassembly source identifiers derived from a stable station or transport identity
+- capture-file rotation, retention, disk quotas, and atomic export publication beyond the crate's default file-size guard
+- explicit text/JSON report-output budgets appropriate for the embedding process
 - interoperability testing against the exact ForeFlight release and network environment being supported
 - licensed external specifications and their conformance vectors when claiming full UAT/FIS-B compliance
 

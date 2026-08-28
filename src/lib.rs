@@ -5,7 +5,7 @@
 //! This crate is not FAA-certified and must not be treated as a safety-of-flight component.
 //!
 //! The crate provides:
-//! - Async HDLC framing with CRC-CCITT FCS and byte stuffing.
+//! - HDLC-style framing with CRC-CCITT FCS and byte stuffing.
 //! - Standard GDL90 message encode/decode support.
 //! - ForeFlight extension message encode/decode support.
 //! - Uplink payload parsing for documented I-Frames and APDUs.

@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use crate::error::{Gdl90Error, Result};
@@ -38,6 +38,33 @@ impl SessionReadLimits {
         {
             return Err(Gdl90Error::InvalidField {
                 field: "session read limits",
+                details: "all limits must be greater than zero".to_string(),
+            });
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionWriteLimits {
+    pub max_file_bytes: u64,
+    pub max_datagram_bytes: usize,
+}
+
+impl Default for SessionWriteLimits {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: DEFAULT_MAX_SESSION_FILE_BYTES,
+            max_datagram_bytes: DEFAULT_MAX_DATAGRAM_SIZE,
+        }
+    }
+}
+
+impl SessionWriteLimits {
+    fn validate(self) -> Result<Self> {
+        if self.max_file_bytes == 0 || self.max_datagram_bytes == 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "session write limits",
                 details: "all limits must be greater than zero".to_string(),
             });
         }
@@ -98,9 +125,15 @@ pub fn read_datagram_file_with_limits(
     let mut datagrams = Vec::new();
     let mut line = String::new();
     let mut line_number = 0usize;
+    let mut total_bytes_read = 0u64;
+    let line_read_limit = u64::try_from(limits.max_line_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
     loop {
         line.clear();
         let bytes_read = reader
+            .by_ref()
+            .take(line_read_limit)
             .read_line(&mut line)
             .map_err(|error| Gdl90Error::Io {
                 context: "read datagram file",
@@ -108,6 +141,19 @@ pub fn read_datagram_file_with_limits(
             })?;
         if bytes_read == 0 {
             break;
+        }
+        total_bytes_read =
+            total_bytes_read
+                .checked_add(bytes_read as u64)
+                .ok_or(Gdl90Error::ResourceLimit {
+                    resource: "session file bytes",
+                    limit: usize::try_from(limits.max_file_bytes).unwrap_or(usize::MAX),
+                })?;
+        if total_bytes_read > limits.max_file_bytes {
+            return Err(Gdl90Error::ResourceLimit {
+                resource: "session file bytes",
+                limit: usize::try_from(limits.max_file_bytes).unwrap_or(usize::MAX),
+            });
         }
         line_number += 1;
         if bytes_read > limits.max_line_bytes {
@@ -136,13 +182,44 @@ pub fn read_datagram_file_with_limits(
 }
 
 pub fn write_datagram_file(path: impl AsRef<Path>, datagrams: &[RecordedDatagram]) -> Result<()> {
+    write_datagram_file_with_limits(path, datagrams, SessionWriteLimits::default())
+}
+
+pub fn write_datagram_file_with_limits(
+    path: impl AsRef<Path>,
+    datagrams: &[RecordedDatagram],
+    limits: SessionWriteLimits,
+) -> Result<()> {
+    let limits = limits.validate()?;
+    let mut lines = Vec::with_capacity(datagrams.len());
+    let mut total_bytes = 0u64;
+    for datagram in datagrams {
+        let line = bounded_datagram_line(datagram, limits.max_datagram_bytes)?;
+        let line_bytes = u64::try_from(line.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        total_bytes = total_bytes
+            .checked_add(line_bytes)
+            .ok_or(Gdl90Error::ResourceLimit {
+                resource: "session output bytes",
+                limit: usize::try_from(limits.max_file_bytes).unwrap_or(usize::MAX),
+            })?;
+        if total_bytes > limits.max_file_bytes {
+            return Err(Gdl90Error::ResourceLimit {
+                resource: "session output bytes",
+                limit: usize::try_from(limits.max_file_bytes).unwrap_or(usize::MAX),
+            });
+        }
+        lines.push(line);
+    }
+
     let file = File::create(path.as_ref()).map_err(|error| Gdl90Error::Io {
         context: "create datagram file",
         details: error.to_string(),
     })?;
     let mut writer = BufWriter::new(file);
-    for datagram in datagrams {
-        writeln!(writer, "{}", datagram.to_line()).map_err(|error| Gdl90Error::Io {
+    for line in lines {
+        writeln!(writer, "{line}").map_err(|error| Gdl90Error::Io {
             context: "write datagram file",
             details: error.to_string(),
         })?;
@@ -154,6 +231,16 @@ pub fn write_datagram_file(path: impl AsRef<Path>, datagrams: &[RecordedDatagram
 }
 
 pub fn append_datagram(path: impl AsRef<Path>, datagram: &RecordedDatagram) -> Result<()> {
+    append_datagram_with_limits(path, datagram, SessionWriteLimits::default())
+}
+
+pub fn append_datagram_with_limits(
+    path: impl AsRef<Path>,
+    datagram: &RecordedDatagram,
+    limits: SessionWriteLimits,
+) -> Result<()> {
+    let limits = limits.validate()?;
+    let line = bounded_datagram_line(datagram, limits.max_datagram_bytes)?;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -162,8 +249,28 @@ pub fn append_datagram(path: impl AsRef<Path>, datagram: &RecordedDatagram) -> R
             context: "open datagram file for append",
             details: error.to_string(),
         })?;
+    let current_bytes = file
+        .metadata()
+        .map_err(|error| Gdl90Error::Io {
+            context: "read datagram output metadata",
+            details: error.to_string(),
+        })?
+        .len();
+    let line_bytes = u64::try_from(line.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    if current_bytes
+        .checked_add(line_bytes)
+        .is_none_or(|total| total > limits.max_file_bytes)
+    {
+        return Err(Gdl90Error::ResourceLimit {
+            resource: "session output bytes",
+            limit: usize::try_from(limits.max_file_bytes).unwrap_or(usize::MAX),
+        });
+    }
+
     let mut writer = BufWriter::new(file);
-    writeln!(writer, "{}", datagram.to_line()).map_err(|error| Gdl90Error::Io {
+    writeln!(writer, "{line}").map_err(|error| Gdl90Error::Io {
         context: "append datagram file",
         details: error.to_string(),
     })?;
@@ -171,6 +278,16 @@ pub fn append_datagram(path: impl AsRef<Path>, datagram: &RecordedDatagram) -> R
         context: "flush datagram append",
         details: error.to_string(),
     })
+}
+
+fn bounded_datagram_line(datagram: &RecordedDatagram, max_datagram_bytes: usize) -> Result<String> {
+    if datagram.bytes.len() > max_datagram_bytes {
+        return Err(Gdl90Error::ResourceLimit {
+            resource: "session datagram bytes",
+            limit: max_datagram_bytes,
+        });
+    }
+    Ok(datagram.to_line())
 }
 
 pub fn parse_datagram_line(line: &str) -> Result<Option<RecordedDatagram>> {

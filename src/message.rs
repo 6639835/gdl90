@@ -1380,6 +1380,12 @@ impl HeightAboveTerrain {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
+        if self.feet == Some(i16::MIN) {
+            return Err(Gdl90Error::InvalidField {
+                field: "height above terrain",
+                details: "-32768 is reserved for an unavailable value".to_string(),
+            });
+        }
         let mut out = Vec::with_capacity(Self::LEN);
         out.push(HEIGHT_ABOVE_TERRAIN_MESSAGE_ID);
         out.extend_from_slice(&self.feet.unwrap_or(i16::MIN).to_be_bytes());
@@ -1465,14 +1471,38 @@ impl OwnshipGeometricAltitude {
                 details: "does not fit in signed 16-bit 5-foot units".to_string(),
             });
         }
-        let greater_than_sentinel = match encoding {
-            VerticalFigureOfMeritEncoding::GarminRevA => Self::GARMIN_GREATER_THAN_32766,
-            VerticalFigureOfMeritEncoding::ForeFlightLegacy => Self::FOREFLIGHT_GREATER_THAN_32766,
-        };
-        let vfom = match self.vertical_figure_of_merit {
-            VerticalFigureOfMerit::Meters(value) => value.min(greater_than_sentinel),
-            VerticalFigureOfMerit::NotAvailable => Self::NOT_AVAILABLE,
-            VerticalFigureOfMerit::GreaterThan32766 => greater_than_sentinel,
+        let vfom = match (encoding, self.vertical_figure_of_merit) {
+            (_, VerticalFigureOfMerit::NotAvailable) => Self::NOT_AVAILABLE,
+            (
+                VerticalFigureOfMeritEncoding::GarminRevA,
+                VerticalFigureOfMerit::GreaterThan32766,
+            ) => Self::GARMIN_GREATER_THAN_32766,
+            (
+                VerticalFigureOfMeritEncoding::ForeFlightLegacy,
+                VerticalFigureOfMerit::GreaterThan32766,
+            ) => Self::FOREFLIGHT_GREATER_THAN_32766,
+            (VerticalFigureOfMeritEncoding::GarminRevA, VerticalFigureOfMerit::Meters(value)) => {
+                value.min(Self::GARMIN_GREATER_THAN_32766)
+            }
+            (
+                VerticalFigureOfMeritEncoding::ForeFlightLegacy,
+                VerticalFigureOfMerit::Meters(value),
+            ) if value == Self::FOREFLIGHT_GREATER_THAN_32766 => {
+                return Err(Gdl90Error::InvalidField {
+                    field: "ForeFlight VFOM numeric value",
+                    details:
+                        "32494 meters collides with ForeFlight's published greater-than sentinel"
+                            .to_string(),
+                });
+            }
+            (
+                VerticalFigureOfMeritEncoding::ForeFlightLegacy,
+                VerticalFigureOfMerit::Meters(value),
+            ) if value > Self::GARMIN_GREATER_THAN_32766 => Self::FOREFLIGHT_GREATER_THAN_32766,
+            (
+                VerticalFigureOfMeritEncoding::ForeFlightLegacy,
+                VerticalFigureOfMerit::Meters(value),
+            ) => value,
         };
 
         let mut out = Vec::with_capacity(Self::LEN);

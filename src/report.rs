@@ -1,6 +1,8 @@
 use serde::Serialize;
 
-use crate::analysis::{SessionAnalysis, SessionValidation, analyze_datagrams, validate_datagrams};
+use crate::analysis::{
+    SessionAnalysis, SessionValidation, analyze_datagrams, validate_datagrams_syntax,
+};
 use crate::frame::FrameDecoder;
 use crate::message::Message;
 use crate::session::{RecordedDatagram, encode_hex};
@@ -46,7 +48,7 @@ pub enum FrameReport {
 
 pub fn build_session_report(datagrams: &[RecordedDatagram]) -> SessionReport {
     let analysis = analyze_datagrams(datagrams);
-    let validation = validate_datagrams(datagrams);
+    let validation = validate_datagrams_syntax(datagrams);
     let mut reports = Vec::with_capacity(datagrams.len());
 
     for (datagram_index, datagram) in datagrams.iter().enumerate() {
