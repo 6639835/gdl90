@@ -57,3 +57,18 @@ replace_once(
             })?;
         let duplicate = match &existing.segments[index] {''',
 )
+
+replace_once(
+    "src/uplink.rs",
+    '''        if let Some(segments) = complete_segments {
+            self.remove_scope(scope);
+            return Ok(ReassemblyStatus::Complete(assemble_product_file(
+                key, &segments,
+            )?));
+        }''',
+    '''        if let Some(segments) = complete_segments {
+            let complete = assemble_product_file(key, &segments)?;
+            self.remove_scope(scope);
+            return Ok(ReassemblyStatus::Complete(complete));
+        }''',
+)
