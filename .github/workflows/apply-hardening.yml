@@ -22,6 +22,7 @@ jobs:
         run: |
           python scripts/hardening/patch_core.py
           python scripts/hardening/patch_protocol.py
+          python scripts/hardening/patch_compile_fix.py
           python scripts/hardening/patch_docs.py
       - name: Format
         run: |
@@ -33,6 +34,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Commit verified patch
         run: |
+          rm -rf scripts/hardening
+          rm -f .github/workflows/apply-hardening.yml
           if git diff --quiet && git diff --cached --quiet; then
             echo "No generated changes"
             exit 0
