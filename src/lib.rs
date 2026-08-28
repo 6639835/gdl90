@@ -1,4 +1,8 @@
+#![forbid(unsafe_code)]
+
 //! GDL90 binary protocol and ForeFlight extension support.
+//!
+//! This crate is not FAA-certified and must not be treated as a safety-of-flight component.
 //!
 //! The crate provides:
 //! - Async HDLC framing with CRC-CCITT FCS and byte stuffing.
@@ -29,13 +33,14 @@ pub use crate::message::{
     TargetAlertStatus, TargetMisc, TargetReport, TrackType, UatAddressQualifier,
     UatAdsbPayloadHeader, UatAirGroundState, UatAltitude, UatAltitudeType, UatCallSignType,
     UatDimensions, UatEmergencyStatus, UatHeadingType, UatPosition, UatTrack, UatVerticalRate,
-    VerticalFigureOfMerit,
+    VerticalFigureOfMerit, VerticalFigureOfMeritEncoding,
 };
 pub use crate::uplink::{
-    Apdu, ApduHeader, ApduMonthDay, ApduProductFileKey, ApduReassembler, ApduSegmentation,
-    CurrentReportList, CurrentReportListItem, FisbProduct, FisbProductId, FrameType,
-    GenericTextApdu, GenericTextField, GenericTextRecord, GenericTextRecordKind, InformationFrame,
-    NexradApdu, NexradBlock, NexradBlockReference, NexradGeoBounds, NexradIntensity,
-    ReassembledApdu, ReassemblyStatus, ReassemblyStrategy, ServiceStatusSignal, TextQualifier,
-    UatUplinkHeader, UatUplinkPayload, decode_dlac_text, encode_dlac_text, is_twgo_product,
+    Apdu, ApduHeader, ApduMonthDay, ApduPayload, ApduProductFileKey, ApduReassembler,
+    ApduReassemblyScope, ApduSegmentation, CurrentReportList, CurrentReportListItem, FisbProduct,
+    FisbProductId, FrameType, GenericTextApdu, GenericTextField, GenericTextRecord,
+    GenericTextRecordKind, InformationFrame, NexradApdu, NexradBlock, NexradBlockReference,
+    NexradGeoBounds, NexradIntensity, OpaqueApdu, ReassembledApdu, ReassemblyLimits,
+    ReassemblyStatus, ReassemblyStrategy, ServiceStatusSignal, TextQualifier, UatUplinkHeader,
+    UatUplinkPayload, decode_dlac_text, encode_dlac_text, is_twgo_product,
 };

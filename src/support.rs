@@ -187,14 +187,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "2",
             "RS-422 Bus Message Structure",
-            SupportState::Complete,
-            "The documented framing, transport characteristics, and bandwidth behavior are implemented.",
+            SupportState::Partial,
+            "Framing and bounded scheduling helpers are implemented; hardware RS-422 I/O and installation certification are not part of this crate.",
         ),
         support_entry(
             "2.1",
             "Physical Interface",
-            SupportState::Complete,
-            "RS-422 serial profile and connector mapping are represented in support.rs.",
+            SupportState::Partial,
+            "Electrical profile and connector metadata are represented; no hardware driver, wiring validation, or certified installation support is provided.",
         ),
         support_entry(
             "2.2",
@@ -229,14 +229,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "2.3",
             "Bandwidth Management",
-            SupportState::Complete,
-            "Byte-budget scheduling and documented output order are implemented.",
+            SupportState::Partial,
+            "A validated one-second selection algorithm is implemented; the application must supply a monotonic transmission loop and backpressure policy.",
         ),
         support_entry(
             "3",
             "Message Definitions",
-            SupportState::Complete,
-            "All documented outer message formats, including pass-through ADS-B inner field decoding, are implemented.",
+            SupportState::Partial,
+            "Garmin outer message formats are implemented and pass-through payload types are validated; full inner UAT conformance depends on RTCA/DO-282 material outside the public ICD.",
         ),
         support_entry(
             "3.1",
@@ -331,8 +331,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "3.6",
             "Pass-Through Reports",
-            SupportState::Complete,
-            "Basic and Long payloads validate the matching UAT payload type and decode into typed UAT header, state-vector, mode-status, and auxiliary-state-vector fields while preserving the original raw bytes.",
+            SupportState::BlockedByExternalSpec,
+            "Outer lengths and matching Basic/Long payload types are validated without panic; complete inner-field conformance requires licensed RTCA/DO-282 requirements and vectors.",
         ),
         support_entry(
             "3.7",
@@ -349,8 +349,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4",
             "Uplink Payload Format",
-            SupportState::Complete,
-            "The Rev A uplink container, information frames, APDU headers, product-file segmentation, and the product definitions supplied by Garmin are implemented; external future-product schemas are preserved raw by design.",
+            SupportState::Partial,
+            "The fixed container, zero-fill, I-Frames, minimal APDUs, and bounded reassembly are implemented; optional descriptors and externally defined products are preserved losslessly when not semantically decoded.",
         ),
         support_entry(
             "4.1",
@@ -403,14 +403,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4.3",
             "FIS-B Product Encoding (APDUs)",
-            SupportState::Complete,
-            "Variable-length APDU headers, civil-time variants, reserved A/G/P bits, segmentation metadata, total-length constraints, and stateful product-file reassembly are implemented.",
+            SupportState::Partial,
+            "Minimal APDU headers and bounded source-scoped reassembly are implemented. Optional Product Descriptor forms are retained as opaque bytes pending the external normative schema.",
         ),
         support_entry(
             "4.3.1",
             "APDU Header",
-            SupportState::Complete,
-            "APDU headers decode and encode every operational UAT time/segmentation variant, validate civil/calendar ranges, and require the historical A/G/P positions to be zero as reserved bits.",
+            SupportState::BlockedByExternalSpec,
+            "The public minimal header is decoded semantically. Nonzero optional descriptor flags are no longer rejected or discarded and are preserved losslessly until the external descriptor schema is available.",
         ),
         support_entry(
             "4.3.2",
@@ -421,8 +421,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "4.4",
             "FIS-B Products",
-            SupportState::Complete,
-            "The Generic Text and NEXRAD schemas defined by Rev A are decoded and encoded; other registry product IDs are named where known and preserved losslessly because their schemas are outside the Garmin ICD.",
+            SupportState::BlockedByExternalSpec,
+            "Generic Text and the public NEXRAD examples are implemented; complete product-registry conformance requires FAA/RTCA schemas not contained in Garmin Rev A.",
         ),
         support_entry(
             "4.4.1",
@@ -445,8 +445,8 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "5",
             "FIS-B Product APDU Definition",
-            SupportState::Complete,
-            "Both product definitions supplied by the Garmin ICD—Type 4 NEXRAD and Generic Text Type 2—are implemented and covered by published sample vectors.",
+            SupportState::BlockedByExternalSpec,
+            "The Garmin examples and public fields are implemented, but the ICD delegates normative product details to RTCA/DO-267A and the FAA registry.",
         ),
         support_entry(
             "5.1",
@@ -511,14 +511,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "6",
             "Control Panel Interface",
-            SupportState::Complete,
-            "The RS-232 control-panel serial profile and all documented ASCII control messages are implemented.",
+            SupportState::Partial,
+            "ASCII message codecs and cadence metadata are implemented; physical serial transport and certified equipment integration are not provided.",
         ),
         support_entry(
             "6.1",
             "Physical Interface",
-            SupportState::Complete,
-            "RS-232 serial profiles at 1200 and 9600 baud plus the documented DB15/P1 pin mapping are represented in support.rs.",
+            SupportState::Partial,
+            "Baud/framing and pin metadata are represented, but this crate does not open or validate a physical RS-232 device.",
         ),
         support_entry(
             "6.2",
@@ -547,14 +547,14 @@ pub fn section_support_matrix() -> Vec<SectionSupportEntry> {
         support_entry(
             "ForeFlight Connectivity",
             "ForeFlight Connectivity",
-            SupportState::Complete,
-            "Connectivity helper logic for Heartbeat/Ownship presence and the documented packet-size guard are implemented.",
+            SupportState::Partial,
+            "Connectivity detection, IP-aware packet budgets, and a deterministic cadence scheduler are implemented; an application must drive the live loop and verify device interoperability.",
         ),
         support_entry(
             "ForeFlight Broadcast",
             "ForeFlight Broadcast",
-            SupportState::Complete,
-            "UDP discovery JSON parsing, configurable target derivation, and the documented 5-second cadence constant are implemented.",
+            SupportState::Partial,
+            "Discovery parsing, target derivation, and a five-second scheduler are implemented; continuous broadcast lifecycle and network-change handling belong to the embedding application.",
         ),
         support_entry(
             "ForeFlight Messages",
@@ -658,7 +658,10 @@ mod tests {
     }
 
     #[test]
-    fn garmin_rev_a_has_no_incomplete_support_entries() {
-        assert!(missing_sections().is_empty());
+    fn support_matrix_exposes_known_external_and_transport_boundaries() {
+        let missing = missing_sections();
+        for section in ["2.1", "3.6", "4.3.1", "4.4", "6.1"] {
+            assert!(missing.iter().any(|entry| entry.section == section));
+        }
     }
 }

@@ -397,6 +397,14 @@ pub enum VerticalFigureOfMerit {
     GreaterThan32766,
 }
 
+/// Selects the documented Garmin sentinel or the conflicting legacy value
+/// currently published by ForeFlight. Strict GDL90 decoding remains Garmin Rev A.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalFigureOfMeritEncoding {
+    GarminRevA,
+    ForeFlightLegacy,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetReport {
     pub alert_status: TargetAlertStatus,
@@ -1318,8 +1326,8 @@ impl<const N: usize> PassThroughReport<N> {
 }
 
 impl PassThroughReport<18> {
-    pub fn basic_payload(&self) -> BasicUatPayload {
-        BasicUatPayload::decode(&self.payload).expect("fixed-size basic payload should decode")
+    pub fn basic_payload(&self) -> Result<BasicUatPayload> {
+        BasicUatPayload::decode(&self.payload)
     }
 
     pub fn from_basic_payload(
@@ -1334,8 +1342,8 @@ impl PassThroughReport<18> {
 }
 
 impl PassThroughReport<34> {
-    pub fn long_payload(&self) -> LongUatPayload {
-        LongUatPayload::decode(&self.payload).expect("fixed-size long payload should decode")
+    pub fn long_payload(&self) -> Result<LongUatPayload> {
+        LongUatPayload::decode(&self.payload)
     }
 
     pub fn from_long_payload(
@@ -1388,8 +1396,26 @@ pub struct OwnshipGeometricAltitude {
 
 impl OwnshipGeometricAltitude {
     pub const LEN: usize = 5;
+    const GARMIN_GREATER_THAN_32766: u16 = 0x7FFE;
+    const FOREFLIGHT_GREATER_THAN_32766: u16 = 0x7EEE;
+    const NOT_AVAILABLE: u16 = 0x7FFF;
 
+    /// Strict Garmin GDL90 Public ICD Rev A decoding.
     pub fn decode(payload: &[u8]) -> Result<Self> {
+        Self::decode_with_foreflight_compatibility(payload, false)
+    }
+
+    /// Accepts both Garmin's 0x7FFE sentinel and ForeFlight's published 0x7EEE
+    /// legacy value. The raw conflict is explicit rather than silently changing
+    /// the strict GDL90 decoder.
+    pub fn decode_foreflight_compatible(payload: &[u8]) -> Result<Self> {
+        Self::decode_with_foreflight_compatibility(payload, true)
+    }
+
+    fn decode_with_foreflight_compatibility(
+        payload: &[u8],
+        accept_foreflight_sentinel: bool,
+    ) -> Result<Self> {
         if payload.len() != Self::LEN {
             return Err(Gdl90Error::InvalidLength {
                 context: "ownship geometric altitude message",
@@ -1399,18 +1425,33 @@ impl OwnshipGeometricAltitude {
         }
         let raw_altitude = i16::from_be_bytes([payload[1], payload[2]]);
         let raw_metrics = u16::from_be_bytes([payload[3], payload[4]]);
+        let raw_vfom = raw_metrics & 0x7FFF;
         Ok(Self {
             altitude_feet: i32::from(raw_altitude) * 5,
             vertical_warning: (raw_metrics & 0x8000) != 0,
-            vertical_figure_of_merit: match raw_metrics & 0x7FFF {
-                0x7FFF => VerticalFigureOfMerit::NotAvailable,
-                0x7FFE => VerticalFigureOfMerit::GreaterThan32766,
+            vertical_figure_of_merit: match raw_vfom {
+                Self::NOT_AVAILABLE => VerticalFigureOfMerit::NotAvailable,
+                Self::GARMIN_GREATER_THAN_32766 => VerticalFigureOfMerit::GreaterThan32766,
+                Self::FOREFLIGHT_GREATER_THAN_32766 if accept_foreflight_sentinel => {
+                    VerticalFigureOfMerit::GreaterThan32766
+                }
                 meters => VerticalFigureOfMerit::Meters(meters),
             },
         })
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
+        self.encode_with_vfom_encoding(VerticalFigureOfMeritEncoding::GarminRevA)
+    }
+
+    pub fn encode_for_foreflight(&self) -> Result<Vec<u8>> {
+        self.encode_with_vfom_encoding(VerticalFigureOfMeritEncoding::ForeFlightLegacy)
+    }
+
+    pub fn encode_with_vfom_encoding(
+        &self,
+        encoding: VerticalFigureOfMeritEncoding,
+    ) -> Result<Vec<u8>> {
         if self.altitude_feet % 5 != 0 {
             return Err(Gdl90Error::InvalidField {
                 field: "geometric altitude",
@@ -1424,10 +1465,14 @@ impl OwnshipGeometricAltitude {
                 details: "does not fit in signed 16-bit 5-foot units".to_string(),
             });
         }
+        let greater_than_sentinel = match encoding {
+            VerticalFigureOfMeritEncoding::GarminRevA => Self::GARMIN_GREATER_THAN_32766,
+            VerticalFigureOfMeritEncoding::ForeFlightLegacy => Self::FOREFLIGHT_GREATER_THAN_32766,
+        };
         let vfom = match self.vertical_figure_of_merit {
-            VerticalFigureOfMerit::Meters(value) => value.min(0x7FFE),
-            VerticalFigureOfMerit::NotAvailable => 0x7FFF,
-            VerticalFigureOfMerit::GreaterThan32766 => 0x7FFE,
+            VerticalFigureOfMerit::Meters(value) => value.min(greater_than_sentinel),
+            VerticalFigureOfMerit::NotAvailable => Self::NOT_AVAILABLE,
+            VerticalFigureOfMerit::GreaterThan32766 => greater_than_sentinel,
         };
 
         let mut out = Vec::with_capacity(Self::LEN);
@@ -1502,26 +1547,26 @@ impl Message {
                 message.altitude_feet, message.vertical_warning
             ),
             Self::TrafficReport(message) => format_target_summary("traffic", message),
-            Self::BasicReport(message) => {
-                let payload = message.basic_payload();
-                format!(
+            Self::BasicReport(message) => match message.basic_payload() {
+                Ok(payload) => format!(
                     "tor={:?} type={} qualifier={} address={:#08x}",
                     message.time_of_reception,
                     payload.header.payload_type_code,
                     payload.header.address_qualifier,
                     payload.header.address
-                )
-            }
-            Self::LongReport(message) => {
-                let payload = message.long_payload();
-                format!(
+                ),
+                Err(error) => format!("invalid basic UAT payload: {error}"),
+            },
+            Self::LongReport(message) => match message.long_payload() {
+                Ok(payload) => format!(
                     "tor={:?} type={} qualifier={} address={:#08x}",
                     message.time_of_reception,
                     payload.header.payload_type_code,
                     payload.header.address_qualifier,
                     payload.header.address
-                )
-            }
+                ),
+                Err(error) => format!("invalid long UAT payload: {error}"),
+            },
             Self::ForeFlightId(message) => format!(
                 "version={} name={} long_name={}",
                 message.version, message.device_name, message.device_long_name
@@ -1574,14 +1619,16 @@ impl Message {
                 OwnshipGeometricAltitude::decode(payload)?,
             )),
             TRAFFIC_REPORT_MESSAGE_ID => Ok(Self::TrafficReport(TargetReport::decode(payload)?)),
-            BASIC_REPORT_MESSAGE_ID => Ok(Self::BasicReport(PassThroughReport::<18>::decode(
-                "basic report",
-                payload,
-            )?)),
-            LONG_REPORT_MESSAGE_ID => Ok(Self::LongReport(PassThroughReport::<34>::decode(
-                "long report",
-                payload,
-            )?)),
+            BASIC_REPORT_MESSAGE_ID => {
+                let report = PassThroughReport::<18>::decode("basic report", payload)?;
+                report.basic_payload()?;
+                Ok(Self::BasicReport(report))
+            }
+            LONG_REPORT_MESSAGE_ID => {
+                let report = PassThroughReport::<34>::decode("long report", payload)?;
+                report.long_payload()?;
+                Ok(Self::LongReport(report))
+            }
             FOREFLIGHT_MESSAGE_ID => match payload.get(1).copied() {
                 Some(FOREFLIGHT_ID_MESSAGE_SUB_ID) => {
                     Ok(Self::ForeFlightId(ForeFlightIdMessage::decode(payload)?))
@@ -1610,8 +1657,14 @@ impl Message {
             Self::OwnshipReport(message) => message.encode(OWNSHIP_REPORT_MESSAGE_ID),
             Self::OwnshipGeometricAltitude(message) => message.encode(),
             Self::TrafficReport(message) => message.encode(TRAFFIC_REPORT_MESSAGE_ID),
-            Self::BasicReport(message) => message.encode(BASIC_REPORT_MESSAGE_ID),
-            Self::LongReport(message) => message.encode(LONG_REPORT_MESSAGE_ID),
+            Self::BasicReport(message) => {
+                message.basic_payload()?;
+                message.encode(BASIC_REPORT_MESSAGE_ID)
+            }
+            Self::LongReport(message) => {
+                message.long_payload()?;
+                message.encode(LONG_REPORT_MESSAGE_ID)
+            }
             Self::ForeFlightId(message) => message.encode(),
             Self::ForeFlightAhrs(message) => message.encode(),
             Self::Unknown { message_id, data } => {
@@ -1650,6 +1703,12 @@ pub struct FrameMessageDecoder {
 impl FrameMessageDecoder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_max_stuffed_frame_len(max_stuffed_frame_len: usize) -> Result<Self> {
+        Ok(Self {
+            frame_decoder: FrameDecoder::with_max_stuffed_frame_len(max_stuffed_frame_len)?,
+        })
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Result<Message>> {

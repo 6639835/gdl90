@@ -4,6 +4,46 @@ use std::path::Path;
 
 use crate::error::{Gdl90Error, Result};
 use crate::message::{FrameMessageDecoder, Message};
+use crate::transport::DEFAULT_MAX_DATAGRAM_SIZE;
+
+pub const DEFAULT_MAX_SESSION_FILE_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_MAX_SESSION_LINE_BYTES: usize = 8 * 1024;
+pub const DEFAULT_MAX_SESSION_DATAGRAMS: usize = 1_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionReadLimits {
+    pub max_file_bytes: u64,
+    pub max_line_bytes: usize,
+    pub max_datagrams: usize,
+    pub max_datagram_bytes: usize,
+}
+
+impl Default for SessionReadLimits {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: DEFAULT_MAX_SESSION_FILE_BYTES,
+            max_line_bytes: DEFAULT_MAX_SESSION_LINE_BYTES,
+            max_datagrams: DEFAULT_MAX_SESSION_DATAGRAMS,
+            max_datagram_bytes: DEFAULT_MAX_DATAGRAM_SIZE,
+        }
+    }
+}
+
+impl SessionReadLimits {
+    fn validate(self) -> Result<Self> {
+        if self.max_file_bytes == 0
+            || self.max_line_bytes == 0
+            || self.max_datagrams == 0
+            || self.max_datagram_bytes == 0
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "session read limits",
+                details: "all limits must be greater than zero".to_string(),
+            });
+        }
+        Ok(self)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedDatagram {
@@ -31,24 +71,63 @@ impl RecordedDatagram {
 }
 
 pub fn read_datagram_file(path: impl AsRef<Path>) -> Result<Vec<RecordedDatagram>> {
+    read_datagram_file_with_limits(path, SessionReadLimits::default())
+}
+
+pub fn read_datagram_file_with_limits(
+    path: impl AsRef<Path>,
+    limits: SessionReadLimits,
+) -> Result<Vec<RecordedDatagram>> {
+    let limits = limits.validate()?;
     let file = File::open(path.as_ref()).map_err(|error| Gdl90Error::Io {
         context: "open datagram file",
         details: error.to_string(),
     })?;
-    let reader = BufReader::new(file);
-    let mut datagrams = Vec::new();
+    let metadata = file.metadata().map_err(|error| Gdl90Error::Io {
+        context: "read datagram file metadata",
+        details: error.to_string(),
+    })?;
+    if metadata.len() > limits.max_file_bytes {
+        return Err(Gdl90Error::ResourceLimit {
+            resource: "session file bytes",
+            limit: usize::try_from(limits.max_file_bytes).unwrap_or(usize::MAX),
+        });
+    }
 
-    for (line_number, line) in reader.lines().enumerate() {
-        let line = line.map_err(|error| Gdl90Error::Io {
-            context: "read datagram file",
-            details: error.to_string(),
-        })?;
-        if let Some(datagram) =
-            parse_datagram_line(&line).map_err(|error| Gdl90Error::InvalidField {
+    let mut reader = BufReader::new(file);
+    let mut datagrams = Vec::new();
+    let mut line = String::new();
+    let mut line_number = 0usize;
+    loop {
+        line.clear();
+        let bytes_read = reader
+            .read_line(&mut line)
+            .map_err(|error| Gdl90Error::Io {
+                context: "read datagram file",
+                details: error.to_string(),
+            })?;
+        if bytes_read == 0 {
+            break;
+        }
+        line_number += 1;
+        if bytes_read > limits.max_line_bytes {
+            return Err(Gdl90Error::ResourceLimit {
+                resource: "session line bytes",
+                limit: limits.max_line_bytes,
+            });
+        }
+        if let Some(datagram) = parse_datagram_line_with_limit(&line, limits.max_datagram_bytes)
+            .map_err(|error| Gdl90Error::InvalidField {
                 field: "datagram file line",
-                details: format!("line {}: {error}", line_number + 1),
+                details: format!("line {line_number}: {error}"),
             })?
         {
+            if datagrams.len() >= limits.max_datagrams {
+                return Err(Gdl90Error::ResourceLimit {
+                    resource: "session datagram count",
+                    limit: limits.max_datagrams,
+                });
+            }
             datagrams.push(datagram);
         }
     }
@@ -95,6 +174,19 @@ pub fn append_datagram(path: impl AsRef<Path>, datagram: &RecordedDatagram) -> R
 }
 
 pub fn parse_datagram_line(line: &str) -> Result<Option<RecordedDatagram>> {
+    parse_datagram_line_with_limit(line, DEFAULT_MAX_DATAGRAM_SIZE)
+}
+
+pub fn parse_datagram_line_with_limit(
+    line: &str,
+    max_datagram_bytes: usize,
+) -> Result<Option<RecordedDatagram>> {
+    if max_datagram_bytes == 0 {
+        return Err(Gdl90Error::InvalidField {
+            field: "maximum datagram bytes",
+            details: "must be greater than zero".to_string(),
+        });
+    }
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
         return Ok(None);
@@ -129,11 +221,25 @@ pub fn parse_datagram_line(line: &str) -> Result<Option<RecordedDatagram>> {
         (None, trimmed)
     };
 
-    let bytes = decode_hex(hex)?;
+    let bytes = decode_hex_with_limit(hex, max_datagram_bytes)?;
     Ok(Some(RecordedDatagram { delay_ms, bytes }))
 }
 
 pub fn decode_hex(input: &str) -> Result<Vec<u8>> {
+    decode_hex_with_limit(input, DEFAULT_MAX_DATAGRAM_SIZE)
+}
+
+pub fn decode_hex_with_limit(input: &str, max_bytes: usize) -> Result<Vec<u8>> {
+    let significant_digits = input
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != ':' && *ch != '-')
+        .count();
+    if significant_digits > max_bytes.saturating_mul(2) {
+        return Err(Gdl90Error::ResourceLimit {
+            resource: "decoded hex bytes",
+            limit: max_bytes,
+        });
+    }
     let filtered = input
         .chars()
         .filter(|ch| !ch.is_ascii_whitespace() && *ch != ':' && *ch != '-')
@@ -206,5 +312,16 @@ mod tests {
         let bytes = vec![0x7E, 0x7D, 0x20, 0x00];
         let encoded = encode_hex(&bytes);
         assert_eq!(decode_hex(&encoded).unwrap(), bytes);
+    }
+
+    #[test]
+    fn bounded_hex_decode_rejects_oversized_datagrams() {
+        assert!(matches!(
+            decode_hex_with_limit("000102", 2),
+            Err(Gdl90Error::ResourceLimit {
+                resource: "decoded hex bytes",
+                limit: 2
+            })
+        ));
     }
 }

@@ -1,25 +1,90 @@
 use crate::error::{Gdl90Error, Result};
 use crate::message::Message;
 use crate::util::{decode_fixed_utf8, encode_fixed_utf8};
+use std::net::IpAddr;
 use std::time::Duration;
 
 pub const FOREFLIGHT_MESSAGE_ID: u8 = 0x65;
 pub const FOREFLIGHT_ID_MESSAGE_SUB_ID: u8 = 0x00;
 pub const FOREFLIGHT_AHRS_MESSAGE_SUB_ID: u8 = 0x01;
-pub const FOREFLIGHT_MAX_DATAGRAM_SIZE: usize = 1500;
+pub const FOREFLIGHT_MAX_IP_PACKET_SIZE: usize = 1_500;
+pub const FOREFLIGHT_IPV4_UDP_PAYLOAD_LIMIT: usize = 1_471;
+pub const FOREFLIGHT_IPV6_UDP_PAYLOAD_LIMIT: usize = 1_451;
+/// Conservative default that is safe for both IPv4 and IPv6 without extension headers.
+pub const FOREFLIGHT_MAX_DATAGRAM_SIZE: usize = FOREFLIGHT_IPV6_UDP_PAYLOAD_LIMIT;
 pub const FOREFLIGHT_AHRS_RATE_HZ: u8 = 5;
+pub const FOREFLIGHT_AHRS_INTERVAL_MILLIS: u64 = 200;
+pub const FOREFLIGHT_CONNECTIVITY_INTERVAL_SECONDS: u64 = 1;
 pub const FOREFLIGHT_DISCOVERY_INTERVAL_SECONDS: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForeFlightCadenceProfile {
     pub ahrs_rate_hz: u8,
+    pub ahrs_interval: Duration,
+    pub connectivity_interval: Duration,
     pub discovery_interval: Duration,
 }
 
 pub fn cadence_profile() -> ForeFlightCadenceProfile {
     ForeFlightCadenceProfile {
         ahrs_rate_hz: FOREFLIGHT_AHRS_RATE_HZ,
+        ahrs_interval: Duration::from_millis(FOREFLIGHT_AHRS_INTERVAL_MILLIS),
+        connectivity_interval: Duration::from_secs(FOREFLIGHT_CONNECTIVITY_INTERVAL_SECONDS),
         discovery_interval: Duration::from_secs(FOREFLIGHT_DISCOVERY_INTERVAL_SECONDS),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ForeFlightCadenceDue {
+    pub ahrs: bool,
+    pub connectivity: bool,
+    pub discovery: bool,
+}
+
+/// Deterministic, monotonic-time scheduler. Missed periods are coalesced rather
+/// than emitted as a burst, which keeps stale AHRS data from flooding a client.
+#[derive(Debug, Clone)]
+pub struct ForeFlightCadenceScheduler {
+    profile: ForeFlightCadenceProfile,
+    next_ahrs: Duration,
+    next_connectivity: Duration,
+    next_discovery: Duration,
+}
+
+impl ForeFlightCadenceScheduler {
+    pub fn new(start: Duration) -> Self {
+        Self::with_profile(start, cadence_profile())
+    }
+
+    pub fn with_profile(start: Duration, profile: ForeFlightCadenceProfile) -> Self {
+        Self {
+            profile,
+            next_ahrs: start,
+            next_connectivity: start,
+            next_discovery: start,
+        }
+    }
+
+    pub fn profile(&self) -> ForeFlightCadenceProfile {
+        self.profile
+    }
+
+    pub fn poll(&mut self, now: Duration) -> ForeFlightCadenceDue {
+        let due = ForeFlightCadenceDue {
+            ahrs: now >= self.next_ahrs,
+            connectivity: now >= self.next_connectivity,
+            discovery: now >= self.next_discovery,
+        };
+        if due.ahrs {
+            self.next_ahrs = now.saturating_add(self.profile.ahrs_interval);
+        }
+        if due.connectivity {
+            self.next_connectivity = now.saturating_add(self.profile.connectivity_interval);
+        }
+        if due.discovery {
+            self.next_discovery = now.saturating_add(self.profile.discovery_interval);
+        }
+        due
     }
 }
 
@@ -65,21 +130,42 @@ pub fn validate_message_set(messages: &[Message]) -> Result<()> {
     Ok(())
 }
 
+pub fn udp_payload_limit_for_ip(ip: IpAddr) -> usize {
+    match ip {
+        IpAddr::V4(_) => FOREFLIGHT_IPV4_UDP_PAYLOAD_LIMIT,
+        IpAddr::V6(_) => FOREFLIGHT_IPV6_UDP_PAYLOAD_LIMIT,
+    }
+}
+
+/// Encodes with the conservative IPv6-safe payload budget.
 pub fn encode_datagram(messages: &[Message]) -> Result<Vec<u8>> {
+    encode_datagram_with_limit(messages, FOREFLIGHT_MAX_DATAGRAM_SIZE)
+}
+
+pub fn encode_datagram_for_ip(messages: &[Message], ip: IpAddr) -> Result<Vec<u8>> {
+    encode_datagram_with_limit(messages, udp_payload_limit_for_ip(ip))
+}
+
+pub fn encode_datagram_with_limit(messages: &[Message], limit: usize) -> Result<Vec<u8>> {
     validate_message_set(messages)?;
+    if limit == 0 {
+        return Err(Gdl90Error::InvalidField {
+            field: "ForeFlight datagram size limit",
+            details: "must be greater than zero".to_string(),
+        });
+    }
 
     let mut datagram = Vec::new();
     for message in messages {
         datagram.extend_from_slice(&message.encode_frame()?);
     }
 
-    if datagram.len() >= FOREFLIGHT_MAX_DATAGRAM_SIZE {
+    if datagram.len() > limit {
         return Err(Gdl90Error::InvalidField {
             field: "ForeFlight datagram size",
             details: format!(
-                "encoded datagram is {} bytes, must be smaller than {}",
-                datagram.len(),
-                FOREFLIGHT_MAX_DATAGRAM_SIZE
+                "encoded UDP payload is {} bytes, must be at most {limit} bytes so the complete IP packet remains below {FOREFLIGHT_MAX_IP_PACKET_SIZE} bytes",
+                datagram.len()
             ),
         });
     }
@@ -457,6 +543,8 @@ mod tests {
     fn cadence_profile_matches_spec() {
         let profile = cadence_profile();
         assert_eq!(profile.ahrs_rate_hz, 5);
+        assert_eq!(profile.ahrs_interval, Duration::from_millis(200));
+        assert_eq!(profile.connectivity_interval, Duration::from_secs(1));
         assert_eq!(profile.discovery_interval, Duration::from_secs(5));
     }
 
@@ -491,11 +579,39 @@ mod tests {
     }
 
     #[test]
-    fn foreflight_datagram_enforces_mtu() {
+    fn foreflight_datagram_enforces_whole_packet_mtu() {
         let oversized = vec![heartbeat(); 200];
         let error = encode_datagram(&oversized).unwrap_err();
         assert!(
             matches!(error, Gdl90Error::InvalidField { field, .. } if field == "ForeFlight datagram size")
+        );
+        assert_eq!(FOREFLIGHT_IPV4_UDP_PAYLOAD_LIMIT + 20 + 8, 1_499);
+        assert_eq!(FOREFLIGHT_IPV6_UDP_PAYLOAD_LIMIT + 40 + 8, 1_499);
+    }
+
+    #[test]
+    fn cadence_scheduler_coalesces_missed_intervals() {
+        let mut scheduler = ForeFlightCadenceScheduler::new(Duration::ZERO);
+        assert_eq!(
+            scheduler.poll(Duration::ZERO),
+            ForeFlightCadenceDue {
+                ahrs: true,
+                connectivity: true,
+                discovery: true,
+            }
+        );
+        assert_eq!(
+            scheduler.poll(Duration::from_millis(199)),
+            ForeFlightCadenceDue::default()
+        );
+        assert!(scheduler.poll(Duration::from_millis(200)).ahrs);
+        let after_pause = scheduler.poll(Duration::from_secs(10));
+        assert!(after_pause.ahrs);
+        assert!(after_pause.connectivity);
+        assert!(after_pause.discovery);
+        assert_eq!(
+            scheduler.poll(Duration::from_secs(10)),
+            ForeFlightCadenceDue::default()
         );
     }
 }

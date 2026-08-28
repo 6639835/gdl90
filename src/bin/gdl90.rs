@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-use gdl90::analysis::{analyze_datagrams, validate_datagrams};
+use gdl90::analysis::{analyze_datagrams, validate_datagrams_syntax};
 use gdl90::foreflight::{
     ForeFlightAhrsMessage, ForeFlightCapabilities, ForeFlightIdMessage, GeometricAltitudeDatum,
     Heading, HeadingType, InternetPolicy,
@@ -156,10 +156,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("validate-file") => {
             let path = PathBuf::from(require_arg(args.next(), "session file")?);
             let datagrams = read_datagram_file(&path)?;
-            let validation = validate_datagrams(&datagrams);
+            let validation = validate_datagrams_syntax(&datagrams);
             print!("{}", render_validation_text(&validation));
             if !validation.is_valid() {
-                return Err("session validation failed".into());
+                return Err("session syntax validation failed".into());
             }
         }
         Some("listen") => {
@@ -239,12 +239,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .next()
                 .map(|value| value.parse::<u32>())
                 .transpose()?
-                .unwrap_or(5);
+                .unwrap_or(25);
             let interval_ms = args
                 .next()
                 .map(|value| value.parse::<u64>())
                 .transpose()?
-                .unwrap_or(1_000);
+                .unwrap_or(200);
             let sender = ForeFlightUdpSender::bind("0.0.0.0:0", &target)?;
             println!(
                 "sending demo traffic from {} to {}",

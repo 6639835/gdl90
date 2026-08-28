@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use gdl90::control::{
     CallSignMessage, ControlMessage, ControlMode, EmergencyCode, IdentStatus, ModeMessage,
     VfrCodeMessage,
@@ -17,13 +19,13 @@ use gdl90::message::{
 };
 use gdl90::session::decode_hex;
 use gdl90::uplink::{
-    Apdu, ApduHeader, ApduMonthDay, ApduProductFileKey, ApduReassembler, ApduSegmentation,
-    CurrentReportList, CurrentReportListItem, DLAC_END_OF_TEXT, DLAC_LINE_FEED,
+    Apdu, ApduHeader, ApduMonthDay, ApduPayload, ApduProductFileKey, ApduReassembler,
+    ApduSegmentation, CurrentReportList, CurrentReportListItem, DLAC_END_OF_TEXT, DLAC_LINE_FEED,
     DLAC_RECORD_SEPARATOR, DLAC_SUBSTITUTE, FisbProduct, FisbProductId, FrameType, GenericTextApdu,
     GenericTextField, GenericTextRecord, GenericTextRecordKind, InformationFrame, NexradApdu,
-    NexradBlock, NexradBlockReference, NexradIntensity, ReassemblyStatus, ReassemblyStrategy,
-    ServiceStatusSignal, TextQualifier, UatUplinkHeader, UatUplinkPayload, decode_dlac_text,
-    encode_dlac_text,
+    NexradBlock, NexradBlockReference, NexradIntensity, ReassemblyLimits, ReassemblyStatus,
+    ReassemblyStrategy, ServiceStatusSignal, TextQualifier, UatUplinkHeader, UatUplinkPayload,
+    decode_dlac_text, encode_dlac_text,
 };
 
 fn segmented_apdu(
@@ -1580,8 +1582,11 @@ fn basic_pass_through_report_exposes_inner_payload_sections() {
     };
 
     assert_eq!(decoded.time_of_reception, Some(0x12_34_56));
-    assert_eq!(decoded.basic_payload(), payload);
-    assert_eq!(decoded.basic_payload().encode().unwrap(), report.payload);
+    assert_eq!(decoded.basic_payload().unwrap(), payload);
+    assert_eq!(
+        decoded.basic_payload().unwrap().encode().unwrap(),
+        report.payload
+    );
 
     let invalid = BasicUatPayload::decode(&[
         0x08, 0xAB, 0xCD, 0xEF, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
@@ -1614,8 +1619,11 @@ fn long_pass_through_report_exposes_inner_payload_sections() {
     };
 
     assert_eq!(decoded.time_of_reception, None);
-    assert_eq!(decoded.long_payload(), payload);
-    assert_eq!(decoded.long_payload().encode().unwrap(), report.payload);
+    assert_eq!(decoded.long_payload().unwrap(), payload);
+    assert_eq!(
+        decoded.long_payload().unwrap().encode().unwrap(),
+        report.payload
+    );
 
     let invalid = LongUatPayload::decode(&[
         0x00, 0x01, 0x23, 0x45, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
@@ -1965,4 +1973,161 @@ fn sample_nexrad_application_data_fields_decode_to_nineteen_products() {
     assert_eq!(empty_count, 10);
     assert_eq!(rle_count, 9);
     assert_eq!(unparsed_count, 0);
+}
+
+#[test]
+fn malformed_pass_through_payload_types_are_rejected_without_panicking() {
+    let mut basic = vec![30, 0xFF, 0xFF, 0xFF];
+    let mut wrong_basic_payload = [0u8; 18];
+    wrong_basic_payload[0] = 1 << 3;
+    basic.extend_from_slice(&wrong_basic_payload);
+    assert!(matches!(
+        Message::decode(&basic),
+        Err(gdl90::Gdl90Error::InvalidField {
+            field: "Basic UAT payload type code",
+            ..
+        })
+    ));
+
+    let manually_constructed = Message::BasicReport(PassThroughReport {
+        time_of_reception: None,
+        payload: wrong_basic_payload,
+    });
+    assert!(
+        manually_constructed
+            .summary()
+            .contains("invalid basic UAT payload")
+    );
+
+    let mut long = vec![31, 0xFF, 0xFF, 0xFF];
+    let wrong_long_payload = [0u8; 34];
+    long.extend_from_slice(&wrong_long_payload);
+    assert!(matches!(
+        Message::decode(&long),
+        Err(gdl90::Gdl90Error::InvalidField {
+            field: "Long UAT payload type code",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn foreflight_vfom_conflict_is_explicit_and_round_trippable() {
+    let message = OwnshipGeometricAltitude {
+        altitude_feet: 1_000,
+        vertical_warning: false,
+        vertical_figure_of_merit: VerticalFigureOfMerit::GreaterThan32766,
+    };
+    let garmin = message.encode().unwrap();
+    assert_eq!(u16::from_be_bytes([garmin[3], garmin[4]]) & 0x7FFF, 0x7FFE);
+    let foreflight = message.encode_for_foreflight().unwrap();
+    assert_eq!(
+        u16::from_be_bytes([foreflight[3], foreflight[4]]) & 0x7FFF,
+        0x7EEE
+    );
+    assert_eq!(
+        OwnshipGeometricAltitude::decode(&foreflight)
+            .unwrap()
+            .vertical_figure_of_merit,
+        VerticalFigureOfMerit::Meters(0x7EEE)
+    );
+    assert_eq!(
+        OwnshipGeometricAltitude::decode_foreflight_compatible(&foreflight)
+            .unwrap()
+            .vertical_figure_of_merit,
+        VerticalFigureOfMerit::GreaterThan32766
+    );
+}
+
+#[test]
+fn uplink_rejects_nonzero_bytes_after_information_frames() {
+    let header = UatUplinkHeader {
+        position_valid: false,
+        latitude_deg: 0.0,
+        longitude_deg: 0.0,
+        utc_coupled: false,
+        application_data_valid: true,
+        slot_id: 0,
+        tisb_site_id: 0,
+    }
+    .encode()
+    .unwrap();
+    let mut payload = UatUplinkPayload {
+        header,
+        application_data: [0; 424],
+    };
+    payload.application_data[10] = 1;
+    assert!(matches!(
+        payload.information_frames(),
+        Err(gdl90::Gdl90Error::InvalidField {
+            field: "UAT application data zero fill",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn optional_product_descriptors_are_preserved_losslessly() {
+    let raw = vec![0b1010_0000, 0, 0, 0, 1, 2, 3];
+    let decoded = ApduPayload::decode(&raw).unwrap();
+    match &decoded {
+        ApduPayload::OpaqueOptionalDescriptor(opaque) => {
+            assert_eq!(opaque.descriptor_flags, 0b101);
+            assert_eq!(opaque.raw, raw);
+        }
+        other => panic!("expected opaque optional descriptor, got {other:?}"),
+    }
+    assert_eq!(decoded.encode().unwrap(), raw);
+}
+
+#[test]
+fn reassembly_separates_reused_ids_by_generation_time() {
+    let start = Instant::now();
+    let mut reassembler = ApduReassembler::new();
+    let mut first_generation = segmented_apdu(413, 7, 2, 1, b"ONE");
+    first_generation.header.hours = 1;
+    let mut second_generation = segmented_apdu(413, 7, 2, 1, b"TWO");
+    second_generation.header.hours = 2;
+
+    reassembler
+        .push_from_at(10, first_generation, start)
+        .unwrap();
+    reassembler
+        .push_from_at(10, second_generation, start)
+        .unwrap();
+
+    let scopes = reassembler.pending_scopes();
+    assert_eq!(scopes.len(), 2);
+    assert_ne!(scopes[0].generation_key, scopes[1].generation_key);
+}
+
+#[test]
+fn reassembly_is_bounded_scoped_and_expiring() {
+    let start = Instant::now();
+    let mut reassembler = ApduReassembler::with_limits(ReassemblyLimits {
+        max_pending_files: 2,
+        max_buffered_bytes: 1_024,
+        max_segments_per_file: 2,
+        max_age: Duration::from_secs(1),
+    })
+    .unwrap();
+
+    let first = segmented_apdu(413, 7, 2, 1, b"ONE");
+    reassembler.push_from_at(10, first.clone(), start).unwrap();
+    reassembler.push_from_at(20, first, start).unwrap();
+    assert_eq!(reassembler.pending_file_count(), 2);
+    assert_eq!(reassembler.pending_scopes().len(), 2);
+
+    let third_source = segmented_apdu(413, 8, 2, 1, b"TWO");
+    assert!(matches!(
+        reassembler.push_from_at(30, third_source, start),
+        Err(gdl90::Gdl90Error::ResourceLimit {
+            resource: "pending APDU product files",
+            limit: 2
+        })
+    ));
+
+    assert_eq!(reassembler.expire_at(start + Duration::from_secs(2)), 2);
+    assert_eq!(reassembler.pending_file_count(), 0);
+    assert_eq!(reassembler.buffered_bytes(), 0);
 }

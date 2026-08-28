@@ -207,22 +207,30 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-## Protocol scope and completion
+## Protocol scope and production status
 
-The built-in support matrix has no incomplete entries for behavior defined by the Garmin GDL 90 Public ICD Rev A. The uplink implementation now includes variable APDU headers, one-based segmentation metadata, stateful reassembly, TWGO repeated-header handling, and the full FIS-B DLAC code table.
+This crate implements a substantial and tested subset of Garmin GDL90 Rev A and the ForeFlight extension, but it does **not** claim certification, safety-of-flight suitability, or complete conformance to external RTCA and FAA product specifications.
 
-- I-Frame type handling is strict to Rev A Table 18: `0x0` is FIS-B APDU, `0xF` is developmental, and `0x1..=0xE` are reserved.
-- The historical APDU A/G/P positions are treated as reserved bits in the operational UAT/FIS-B profile and must be zero.
-- Generic Text Type 2 and NEXRAD Global Block Representation payloads—the product schemas contained in Rev A—are decoded and encoded.
-- Other FAA/FIS-B registry product IDs are named where known and preserve their exact APDU header and payload bytes. Schemas not contained in Rev A are intentionally not guessed.
-- `ApduReassembler` is stateful by design. Applications decide when to discard incomplete product files according to their own receive-window or timeout policy.
+The production hardening in this repository includes:
 
-Inspect the built-in support matrix with:
+- bounded streaming frames, UDP datagrams, session files, and APDU reassembly state
+- independent decoding for each UDP datagram and source-safe APDU reassembly APIs
+- strict Basic/Long pass-through payload-type validation with no reporting panic path
+- strict Garmin VFOM behavior plus an explicit ForeFlight compatibility mode
+- Garmin-required zero-fill validation for unused UAT Application Data
+- lossless preservation of optional Product Descriptor APDUs that cannot be decoded from the public ICD alone
+- IP-version-aware ForeFlight UDP payload limits and a deterministic 5 Hz AHRS cadence scheduler
+- fallible bandwidth configuration and checked byte accounting
+- CI, adversarial parser tests, and scheduled fuzzing targets
 
-```bash
-cargo run --bin gdl90 -- support-status
-cargo run --bin gdl90 -- support-status --missing
-```
+Known boundaries are intentionally reported by `support-status --missing`:
+
+- physical RS-422/RS-232 drivers and certified installation behavior are not implemented
+- complete Basic/Long UAT semantics require RTCA/DO-282
+- complete APDU/Product Descriptor and FIS-B product semantics require RTCA/DO-267A and the FAA FIS-B Product Registry
+- real ForeFlight interoperability still requires testing against supported iOS/iPadOS releases and representative networks
+
+See `docs/CONFORMANCE.md`, `docs/PRODUCTION_READINESS.md`, and `SECURITY.md` before embedding this crate in operational equipment.
 
 ## License
 
