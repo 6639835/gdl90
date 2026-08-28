@@ -11,7 +11,7 @@ jobs:
   apply-and-verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: fix/production-hardening
           fetch-depth: 0
@@ -32,6 +32,8 @@ jobs:
         run: cargo test --all-targets
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Compile fuzz targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
       - name: Commit verified patch
         run: |
           rm -rf scripts/hardening
