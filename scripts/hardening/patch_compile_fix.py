@@ -72,3 +72,31 @@ replace_once(
             return Ok(ReassemblyStatus::Complete(complete));
         }''',
 )
+
+replace_once(
+    "src/uplink.rs",
+    "#[derive(Debug, Clone)]\npub struct ApduReassembler {",
+    "#[derive(Debug, Clone, Default)]\npub struct ApduReassembler {",
+)
+
+replace_once(
+    "src/uplink.rs",
+    '''impl Default for ApduReassembler {
+    fn default() -> Self {
+        Self {
+            pending: BTreeMap::new(),
+            limits: ReassemblyLimits::default(),
+            buffered_bytes: 0,
+        }
+    }
+}
+
+''',
+    "",
+)
+
+replace_once(
+    "scripts/hardening/patch_docs.py",
+    '''version = "0.1.0"\\nedition = "2024"\\nrust-version = "1.85"\\ndescription =''',
+    '''version = "0.1.0"\\nedition = "2024"\\ndescription =''',
+)
