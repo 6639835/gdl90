@@ -25,6 +25,22 @@ pub struct ForeFlightCadenceProfile {
     pub discovery_interval: Duration,
 }
 
+impl ForeFlightCadenceProfile {
+    pub fn validate(self) -> Result<Self> {
+        if self.ahrs_rate_hz == 0
+            || self.ahrs_interval.is_zero()
+            || self.connectivity_interval.is_zero()
+            || self.discovery_interval.is_zero()
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "ForeFlight cadence profile",
+                details: "rate and all intervals must be greater than zero".to_string(),
+            });
+        }
+        Ok(self)
+    }
+}
+
 pub fn cadence_profile() -> ForeFlightCadenceProfile {
     ForeFlightCadenceProfile {
         ahrs_rate_hz: FOREFLIGHT_AHRS_RATE_HZ,
@@ -53,16 +69,21 @@ pub struct ForeFlightCadenceScheduler {
 
 impl ForeFlightCadenceScheduler {
     pub fn new(start: Duration) -> Self {
-        Self::with_profile(start, cadence_profile())
-    }
-
-    pub fn with_profile(start: Duration, profile: ForeFlightCadenceProfile) -> Self {
         Self {
-            profile,
+            profile: cadence_profile(),
             next_ahrs: start,
             next_connectivity: start,
             next_discovery: start,
         }
+    }
+
+    pub fn with_profile(start: Duration, profile: ForeFlightCadenceProfile) -> Result<Self> {
+        Ok(Self {
+            profile: profile.validate()?,
+            next_ahrs: start,
+            next_connectivity: start,
+            next_discovery: start,
+        })
     }
 
     pub fn profile(&self) -> ForeFlightCadenceProfile {
@@ -572,6 +593,39 @@ mod tests {
         assert_eq!(profile.ahrs_interval, Duration::from_millis(200));
         assert_eq!(profile.connectivity_interval, Duration::from_secs(1));
         assert_eq!(profile.discovery_interval, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn cadence_profile_rejects_zero_values() {
+        let valid = cadence_profile();
+        let invalid = [
+            ForeFlightCadenceProfile {
+                ahrs_rate_hz: 0,
+                ..valid
+            },
+            ForeFlightCadenceProfile {
+                ahrs_interval: Duration::ZERO,
+                ..valid
+            },
+            ForeFlightCadenceProfile {
+                connectivity_interval: Duration::ZERO,
+                ..valid
+            },
+            ForeFlightCadenceProfile {
+                discovery_interval: Duration::ZERO,
+                ..valid
+            },
+        ];
+
+        for profile in invalid {
+            assert!(matches!(
+                ForeFlightCadenceScheduler::with_profile(Duration::ZERO, profile),
+                Err(Gdl90Error::InvalidField {
+                    field: "ForeFlight cadence profile",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

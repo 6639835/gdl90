@@ -16,6 +16,21 @@ pub struct ControlCadenceProfile {
     pub vfr_code_interval: Duration,
 }
 
+impl ControlCadenceProfile {
+    pub fn validate(self) -> Result<Self> {
+        if self.mode_interval.is_zero()
+            || self.call_sign_interval.is_zero()
+            || self.vfr_code_interval.is_zero()
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "control cadence profile",
+                details: "all intervals must be greater than zero".to_string(),
+            });
+        }
+        Ok(self)
+    }
+}
+
 pub fn cadence_profile() -> ControlCadenceProfile {
     ControlCadenceProfile {
         mode_interval: CONTROL_MODE_INTERVAL,
@@ -42,17 +57,23 @@ pub struct ControlCadenceScheduler {
 
 impl ControlCadenceScheduler {
     pub fn new(start: Duration) -> Self {
-        Self::with_profile(start, cadence_profile())
-    }
-
-    pub fn with_profile(start: Duration, profile: ControlCadenceProfile) -> Self {
         Self {
-            profile,
+            profile: cadence_profile(),
             next_mode: start,
             next_call_sign: start,
             next_vfr_code: start,
             call_sign_changed: false,
         }
+    }
+
+    pub fn with_profile(start: Duration, profile: ControlCadenceProfile) -> Result<Self> {
+        Ok(Self {
+            profile: profile.validate()?,
+            next_mode: start,
+            next_call_sign: start,
+            next_vfr_code: start,
+            call_sign_changed: false,
+        })
     }
 
     pub fn mark_call_sign_changed(&mut self) {
@@ -372,5 +393,34 @@ mod tests {
         assert!(minute.vfr_code);
         assert!(!minute.call_sign);
         assert!(scheduler.poll(Duration::from_secs(62)).call_sign);
+    }
+
+    #[test]
+    fn control_cadence_profile_rejects_zero_intervals() {
+        let valid = cadence_profile();
+        let invalid = [
+            ControlCadenceProfile {
+                mode_interval: Duration::ZERO,
+                ..valid
+            },
+            ControlCadenceProfile {
+                call_sign_interval: Duration::ZERO,
+                ..valid
+            },
+            ControlCadenceProfile {
+                vfr_code_interval: Duration::ZERO,
+                ..valid
+            },
+        ];
+
+        for profile in invalid {
+            assert!(matches!(
+                ControlCadenceScheduler::with_profile(Duration::ZERO, profile),
+                Err(Gdl90Error::InvalidField {
+                    field: "control cadence profile",
+                    ..
+                })
+            ));
+        }
     }
 }

@@ -86,6 +86,8 @@ tests/
 
 ## Quick start
 
+The declared minimum supported Rust version is **1.88** and is checked in CI.
+
 ```rust
 use gdl90::{Heartbeat, HeartbeatStatus, Message};
 use gdl90::frame::decode_frame;
