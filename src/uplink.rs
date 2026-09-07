@@ -3,6 +3,7 @@ use crate::util::{
     decode_uat_latitude, decode_uat_longitude, encode_uat_latitude, encode_uat_longitude,
 };
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 pub const UAT_UPLINK_PAYLOAD_LEN: usize = 432;
 pub const UAT_HEADER_LEN: usize = 8;
@@ -294,6 +295,18 @@ impl UatUplinkPayload {
             offset += total;
         }
 
+        if self.application_data[offset..]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "UAT application data zero fill",
+                details: format!(
+                    "unused application-data bytes after offset {offset} must be zero"
+                ),
+            });
+        }
+
         Ok(frames)
     }
 
@@ -360,7 +373,19 @@ impl UatUplinkPayload {
         Ok(products)
     }
 
-    /// Decodes every FIS-B APDU information frame in this uplink payload.
+    /// Decodes every FIS-B APDU information frame without discarding future
+    /// optional Product Descriptor forms. Known minimal headers become parsed
+    /// APDUs; optional descriptors are preserved losslessly as opaque payloads.
+    pub fn apdu_payloads(&self) -> Result<Vec<ApduPayload>> {
+        self.information_frames()?
+            .into_iter()
+            .filter(|frame| frame.frame_type == FrameType::FisBApdu)
+            .map(|frame| frame.apdu_payload())
+            .collect()
+    }
+
+    /// Strict semantic decoding for the currently implemented minimal UAT APDU
+    /// profile. Use `apdu_payloads` when lossless forward compatibility matters.
     pub fn apdus(&self) -> Result<Vec<Apdu>> {
         self.information_frames()?
             .into_iter()
@@ -430,7 +455,23 @@ impl InformationFrame {
                     .to_string(),
             });
         }
+        if self.data.is_empty() {
+            return Err(Gdl90Error::InvalidField {
+                field: "I-Frame data length",
+                details: "zero is an end marker; omit empty information frames".into(),
+            });
+        }
         Ok(())
+    }
+
+    pub fn apdu_payload(&self) -> Result<ApduPayload> {
+        if self.frame_type != FrameType::FisBApdu {
+            return Err(Gdl90Error::InvalidField {
+                field: "frame type",
+                details: "frame does not contain a FIS-B APDU".to_string(),
+            });
+        }
+        ApduPayload::decode(&self.data)
     }
 
     pub fn apdu(&self) -> Result<Apdu> {
@@ -603,7 +644,7 @@ impl CurrentReportList {
         }
 
         let mut reports = Vec::with_capacity(count);
-        for chunk in bytes[item_offset..].chunks_exact(3) {
+        for chunk in bytes[item_offset..].as_chunks::<3>().0 {
             reports.push(CurrentReportListItem::decode(chunk)?);
         }
 
@@ -697,6 +738,103 @@ impl CurrentReportListItem {
                 | ((self.report_number >> 8) as u8 & 0x3F),
             (self.report_number & 0xFF) as u8,
         ])
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpaqueApdu {
+    product_id: u16,
+    descriptor_flags: u8,
+    raw: Vec<u8>,
+}
+
+impl OpaqueApdu {
+    pub fn from_raw(raw: Vec<u8>) -> Result<Self> {
+        if raw.len() < MIN_APDU_HEADER_LEN || raw.len() > MAX_APDU_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "opaque APDU",
+                expected: "4..=422 bytes",
+                actual: raw.len(),
+            });
+        }
+        let descriptor_flags = raw[0] >> 5;
+        if descriptor_flags == 0 {
+            return Err(Gdl90Error::InvalidField {
+                field: "opaque APDU descriptor flags",
+                details: "zero flags describe the semantically parsed minimal APDU form"
+                    .to_string(),
+            });
+        }
+        let product_id = (u16::from(raw[0] & 0x1F) << 6) | u16::from(raw[1] >> 2);
+        Ok(Self {
+            product_id,
+            descriptor_flags,
+            raw,
+        })
+    }
+
+    pub fn product_id(&self) -> u16 {
+        self.product_id
+    }
+
+    pub fn descriptor_flags(&self) -> u8 {
+        self.descriptor_flags
+    }
+
+    pub fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+
+    pub fn into_raw(self) -> Vec<u8> {
+        self.raw
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApduPayload {
+    Parsed(Apdu),
+    OpaqueOptionalDescriptor(OpaqueApdu),
+}
+
+impl ApduPayload {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < MIN_APDU_HEADER_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "APDU",
+                expected: "at least 4 bytes",
+                actual: bytes.len(),
+            });
+        }
+        if bytes.len() > MAX_APDU_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "APDU",
+                expected: "at most 422 bytes",
+                actual: bytes.len(),
+            });
+        }
+
+        let descriptor_flags = bytes[0] >> 5;
+        if descriptor_flags == 0 {
+            Ok(Self::Parsed(Apdu::decode(bytes)?))
+        } else {
+            Ok(Self::OpaqueOptionalDescriptor(OpaqueApdu::from_raw(
+                bytes.to_vec(),
+            )?))
+        }
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        match self {
+            Self::Parsed(apdu) => apdu.encode(),
+            Self::OpaqueOptionalDescriptor(apdu) => Ok(apdu.raw().to_vec()),
+        }
+    }
+
+    pub fn product_id(&self) -> u16 {
+        match self {
+            Self::Parsed(apdu) => apdu.header.product_id,
+            Self::OpaqueOptionalDescriptor(apdu) => apdu.product_id(),
+        }
     }
 }
 
@@ -895,21 +1033,86 @@ pub enum ReassemblyStatus {
     Complete(ReassembledApdu),
 }
 
+pub const DEFAULT_REASSEMBLY_MAX_PENDING_FILES: usize = 64;
+pub const DEFAULT_REASSEMBLY_MAX_BUFFERED_BYTES: usize = 1_048_576;
+pub const DEFAULT_REASSEMBLY_MAX_SEGMENTS_PER_FILE: usize = 511;
+pub const DEFAULT_REASSEMBLY_MAX_AGE: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReassemblyLimits {
+    pub max_pending_files: usize,
+    pub max_buffered_bytes: usize,
+    pub max_segments_per_file: usize,
+    /// Hard lifetime from the first accepted segment; duplicates do not extend it.
+    pub max_age: Duration,
+}
+
+impl Default for ReassemblyLimits {
+    fn default() -> Self {
+        Self {
+            max_pending_files: DEFAULT_REASSEMBLY_MAX_PENDING_FILES,
+            max_buffered_bytes: DEFAULT_REASSEMBLY_MAX_BUFFERED_BYTES,
+            max_segments_per_file: DEFAULT_REASSEMBLY_MAX_SEGMENTS_PER_FILE,
+            max_age: DEFAULT_REASSEMBLY_MAX_AGE,
+        }
+    }
+}
+
+impl ReassemblyLimits {
+    fn validate(self) -> Result<Self> {
+        if self.max_pending_files == 0
+            || self.max_buffered_bytes == 0
+            || self.max_segments_per_file == 0
+            || self.max_age.is_zero()
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU reassembly limits",
+                details: "all limits must be greater than zero".to_string(),
+            });
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ApduReassemblyScope {
+    pub source_id: u64,
+    pub key: ApduProductFileKey,
+    /// Packed APDU generation time, separating reused product-file ids.
+    pub generation_key: u32,
+}
+
+fn apdu_generation_key(header: ApduHeader) -> u32 {
+    let (month, day) = header
+        .month_day
+        .map(|value| (value.month, value.day))
+        .unwrap_or((0, 0));
+    (u32::from(header.time_option) << 26)
+        | (u32::from(month) << 22)
+        | (u32::from(day) << 17)
+        | (u32::from(header.hours) << 12)
+        | (u32::from(header.minutes) << 6)
+        | u32::from(header.seconds.unwrap_or(0))
+}
+
 #[derive(Debug, Clone)]
 struct PendingProductFile {
     total: u16,
     segments: Vec<Option<Apdu>>,
+    buffered_bytes: usize,
+    first_received: Instant,
 }
 
-/// Stateful reassembler for FIS-B product files split across APDUs.
+/// Bounded stateful reassembler for FIS-B product files split across APDUs.
 ///
-/// Product files are keyed by `(product_id, product_file_id)`. Segments may
-/// arrive out of order and identical retransmissions are accepted. A
-/// conflicting retransmission is rejected without replacing the previously
-/// accepted segment.
+/// State is scoped by a caller-provided source id, expires after `max_age`, and
+/// is bounded by both file count and encoded byte count. The legacy `push`
+/// method uses source id zero for single-source applications.
 #[derive(Debug, Clone, Default)]
 pub struct ApduReassembler {
-    pending: BTreeMap<ApduProductFileKey, PendingProductFile>,
+    pending: BTreeMap<ApduReassemblyScope, PendingProductFile>,
+    limits: ReassemblyLimits,
+    buffered_bytes: usize,
 }
 
 impl ApduReassembler {
@@ -917,24 +1120,94 @@ impl ApduReassembler {
         Self::default()
     }
 
+    pub fn with_limits(limits: ReassemblyLimits) -> Result<Self> {
+        Ok(Self {
+            limits: limits.validate()?,
+            ..Self::default()
+        })
+    }
+
+    pub fn limits(&self) -> ReassemblyLimits {
+        self.limits
+    }
+
     pub fn pending_file_count(&self) -> usize {
         self.pending.len()
     }
 
+    pub fn buffered_bytes(&self) -> usize {
+        self.buffered_bytes
+    }
+
     pub fn pending_keys(&self) -> Vec<ApduProductFileKey> {
+        self.pending.keys().map(|scope| scope.key).collect()
+    }
+
+    pub fn pending_scopes(&self) -> Vec<ApduReassemblyScope> {
         self.pending.keys().copied().collect()
     }
 
     pub fn discard(&mut self, key: ApduProductFileKey) -> bool {
-        self.pending.remove(&key).is_some()
+        let scopes = self
+            .pending
+            .keys()
+            .filter(|scope| scope.key == key)
+            .copied()
+            .collect::<Vec<_>>();
+        let removed = !scopes.is_empty();
+        for scope in scopes {
+            self.remove_scope(scope);
+        }
+        removed
+    }
+
+    pub fn discard_scope(&mut self, scope: ApduReassemblyScope) -> bool {
+        self.remove_scope(scope).is_some()
     }
 
     pub fn clear(&mut self) {
         self.pending.clear();
+        self.buffered_bytes = 0;
+    }
+
+    pub fn expire(&mut self) -> usize {
+        self.expire_at(Instant::now())
+    }
+
+    pub fn expire_at(&mut self, now: Instant) -> usize {
+        let expired = self
+            .pending
+            .iter()
+            .filter_map(|(scope, file)| {
+                now.checked_duration_since(file.first_received)
+                    .filter(|age| *age >= self.limits.max_age)
+                    .map(|_| *scope)
+            })
+            .collect::<Vec<_>>();
+        let count = expired.len();
+        for scope in expired {
+            self.remove_scope(scope);
+        }
+        count
     }
 
     pub fn push(&mut self, apdu: Apdu) -> Result<ReassemblyStatus> {
+        self.push_from_at(0, apdu, Instant::now())
+    }
+
+    pub fn push_from(&mut self, source_id: u64, apdu: Apdu) -> Result<ReassemblyStatus> {
+        self.push_from_at(source_id, apdu, Instant::now())
+    }
+
+    pub fn push_from_at(
+        &mut self,
+        source_id: u64,
+        apdu: Apdu,
+        now: Instant,
+    ) -> Result<ReassemblyStatus> {
+        self.expire_at(now);
         apdu.header.validate_operational_uat()?;
+        let encoded_len = apdu.encode()?.len();
 
         if !apdu.header.segmentation_flag {
             return Ok(ReassemblyStatus::Unsegmented(apdu));
@@ -948,69 +1221,160 @@ impl ApduReassembler {
             product_id: apdu.header.product_id,
             product_file_id: segmentation.product_file_id,
         };
+        let scope = ApduReassemblyScope {
+            source_id,
+            key,
+            generation_key: apdu_generation_key(apdu.header),
+        };
         let total = segmentation.product_file_length;
+        let total_usize = usize::from(total);
+        if total_usize > self.limits.max_segments_per_file {
+            return Err(Gdl90Error::ResourceLimit {
+                resource: "APDU segments per product file",
+                limit: self.limits.max_segments_per_file,
+            });
+        }
         let index = usize::from(segmentation.apdu_number - 1);
-
-        let (received, complete_segments, duplicate) = {
-            let file = self
-                .pending
-                .entry(key)
-                .or_insert_with(|| PendingProductFile {
-                    total,
-                    segments: vec![None; usize::from(total)],
+        // Validate repeated headers before mutating state. An invalid final
+        // segment must not poison the valid earlier segments or consume quota.
+        if ReassemblyStrategy::for_product(key.product_id) == ReassemblyStrategy::TwgoRepeatedHeader
+        {
+            if apdu.payload.len() < TWGO_REPEATED_HEADER_LEN {
+                return Err(Gdl90Error::InvalidLength {
+                    context: "TWGO segment payload",
+                    expected: "at least 6 bytes",
+                    actual: apdu.payload.len(),
                 });
+            }
+            if let Some(stored) = self
+                .pending
+                .get(&scope)
+                .and_then(|file| file.segments.iter().flatten().next())
+            {
+                if apdu.payload[..TWGO_REPEATED_HEADER_LEN]
+                    != stored.payload[..TWGO_REPEATED_HEADER_LEN]
+                {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "TWGO repeated header",
+                        details: "segment differs from the pending product header".into(),
+                    });
+                }
+            }
+        }
 
-            if file.total != total {
+        let inserted_new = if self.pending.contains_key(&scope) {
+            false
+        } else {
+            if self.pending.len() >= self.limits.max_pending_files {
+                return Err(Gdl90Error::ResourceLimit {
+                    resource: "pending APDU product files",
+                    limit: self.limits.max_pending_files,
+                });
+            }
+            self.pending.insert(
+                scope,
+                PendingProductFile {
+                    total,
+                    segments: vec![None; total_usize],
+                    buffered_bytes: 0,
+                    first_received: now,
+                },
+            );
+            true
+        };
+
+        let declared_total = self
+            .pending
+            .get(&scope)
+            .ok_or(Gdl90Error::InvalidField {
+                field: "APDU product file",
+                details: "pending state disappeared unexpectedly".to_string(),
+            })?
+            .total;
+        if declared_total != total {
+            if inserted_new {
+                self.remove_scope(scope);
+            }
+            return Err(Gdl90Error::InvalidField {
+                field: "APDU product file length",
+                details: format!(
+                    "product file {key:?} was declared with {declared_total} segments and later with {total}"
+                ),
+            });
+        }
+
+        let existing = self.pending.get(&scope).ok_or(Gdl90Error::InvalidField {
+            field: "APDU product file",
+            details: "pending state disappeared unexpectedly".to_string(),
+        })?;
+        let duplicate = match &existing.segments[index] {
+            Some(stored) if stored == &apdu => true,
+            Some(_) => {
                 return Err(Gdl90Error::InvalidField {
-                    field: "APDU product file length",
+                    field: "APDU retransmission",
                     details: format!(
-                        "product file {key:?} was declared with {} segments and later with {total}",
-                        file.total
+                        "product file {key:?} received conflicting data for APDU {}",
+                        segmentation.apdu_number
                     ),
                 });
             }
+            None => false,
+        };
 
-            let duplicate = match &file.segments[index] {
-                Some(existing) if existing == &apdu => true,
-                Some(_) => {
-                    return Err(Gdl90Error::InvalidField {
-                        field: "APDU retransmission",
-                        details: format!(
-                            "product file {key:?} received conflicting data for APDU {}",
-                            segmentation.apdu_number
-                        ),
-                    });
-                }
-                None => {
-                    file.segments[index] = Some(apdu);
-                    false
-                }
-            };
-
-            let received = file
-                .segments
-                .iter()
-                .filter(|segment| segment.is_some())
-                .count() as u16;
-            let complete_segments = if received == total {
-                let mut complete = Vec::with_capacity(file.segments.len());
-                for segment in &file.segments {
-                    let segment = segment.clone().ok_or(Gdl90Error::InvalidField {
-                        field: "APDU product file",
-                        details: "received count is inconsistent with stored segments".to_string(),
+        if !duplicate {
+            let next_total =
+                self.buffered_bytes
+                    .checked_add(encoded_len)
+                    .ok_or(Gdl90Error::ResourceLimit {
+                        resource: "buffered APDU bytes",
+                        limit: self.limits.max_buffered_bytes,
                     })?;
-                    complete.push(segment);
+            if next_total > self.limits.max_buffered_bytes {
+                if inserted_new {
+                    self.remove_scope(scope);
                 }
-                Some(complete)
-            } else {
-                None
-            };
-            (received, complete_segments, duplicate)
+                return Err(Gdl90Error::ResourceLimit {
+                    resource: "buffered APDU bytes",
+                    limit: self.limits.max_buffered_bytes,
+                });
+            }
+            let file = self
+                .pending
+                .get_mut(&scope)
+                .ok_or(Gdl90Error::InvalidField {
+                    field: "APDU product file",
+                    details: "pending state disappeared unexpectedly".to_string(),
+                })?;
+            file.segments[index] = Some(apdu);
+            file.buffered_bytes += encoded_len;
+            self.buffered_bytes = next_total;
+        }
+
+        let file = self.pending.get(&scope).ok_or(Gdl90Error::InvalidField {
+            field: "APDU product file",
+            details: "pending state disappeared unexpectedly".to_string(),
+        })?;
+        let received = file
+            .segments
+            .iter()
+            .filter(|segment| segment.is_some())
+            .count() as u16;
+        let complete_segments = if received == total {
+            let mut complete = Vec::with_capacity(file.segments.len());
+            for segment in &file.segments {
+                complete.push(segment.as_ref().ok_or(Gdl90Error::InvalidField {
+                    field: "APDU product file",
+                    details: "received count is inconsistent with stored segments".to_string(),
+                })?);
+            }
+            Some(complete)
+        } else {
+            None
         };
 
         if let Some(segments) = complete_segments {
             let complete = assemble_product_file(key, &segments)?;
-            self.pending.remove(&key);
+            self.remove_scope(scope);
             return Ok(ReassemblyStatus::Complete(complete));
         }
 
@@ -1029,9 +1393,15 @@ impl ApduReassembler {
             })
         }
     }
+
+    fn remove_scope(&mut self, scope: ApduReassemblyScope) -> Option<PendingProductFile> {
+        let removed = self.pending.remove(&scope)?;
+        self.buffered_bytes = self.buffered_bytes.saturating_sub(removed.buffered_bytes);
+        Some(removed)
+    }
 }
 
-fn assemble_product_file(key: ApduProductFileKey, segments: &[Apdu]) -> Result<ReassembledApdu> {
+fn assemble_product_file(key: ApduProductFileKey, segments: &[&Apdu]) -> Result<ReassembledApdu> {
     let first = segments.first().ok_or(Gdl90Error::InvalidField {
         field: "APDU product file",
         details: "cannot assemble an empty segment list".to_string(),
@@ -1672,6 +2042,42 @@ impl GenericTextRecord {
     }
 
     pub fn validate_metar_taf_composition(&self) -> Result<()> {
+        if self.kind
+            != GenericTextRecordKind::from_record_type(&self.record_type.to_ascii_uppercase())
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "generic text record kind",
+                details: "kind must match the encoded record type".into(),
+            });
+        }
+        for token in [
+            &self.record_type,
+            render_generic_text_field(&self.location),
+            render_generic_text_field(&self.record_time),
+        ] {
+            if token.is_empty()
+                || token.chars().any(|ch| {
+                    ch.is_whitespace()
+                        || matches!(ch, DLAC_RECORD_SEPARATOR | DLAC_END_OF_TEXT | '\0')
+                })
+            {
+                return Err(Gdl90Error::InvalidField {
+                    field: "generic text token",
+                    details: "type/location/time must be nonempty tokens without record delimiters"
+                        .into(),
+                });
+            }
+        }
+        if self
+            .text
+            .chars()
+            .any(|ch| matches!(ch, DLAC_RECORD_SEPARATOR | DLAC_END_OF_TEXT | '\0'))
+        {
+            return Err(Gdl90Error::InvalidField {
+                field: "generic text record text",
+                details: "text must not contain record delimiters".into(),
+            });
+        }
         let encoded_len = self.encoded_len()?;
         if encoded_len > MAX_APDU_PAYLOAD_LEN {
             return Err(Gdl90Error::InvalidLength {
@@ -1761,7 +2167,7 @@ impl NexradApdu {
 
         let apdu = Apdu {
             header: self.header,
-            payload: self.block.to_payload(),
+            payload: self.block.to_payload()?,
         };
         apdu.validate_payload_len()?;
         Ok(apdu)
@@ -1818,6 +2224,13 @@ pub struct NexradGeoBounds {
 
 impl NexradBlock {
     pub fn from_payload(payload: &[u8]) -> Result<Self> {
+        if payload.len() > MAX_APDU_PAYLOAD_LEN {
+            return Err(Gdl90Error::InvalidLength {
+                context: "NEXRAD payload",
+                expected: "at most 418 bytes",
+                actual: payload.len(),
+            });
+        }
         if payload.len() < 3 {
             return Err(Gdl90Error::InvalidLength {
                 context: "NEXRAD APDU payload",
@@ -1828,6 +2241,11 @@ impl NexradBlock {
 
         let mut reference = [0u8; 3];
         reference.copy_from_slice(&payload[..3]);
+        if payload.len() == 3 && reference[0] & 0x80 != 0 {
+            return Ok(Self::Unparsed {
+                raw: payload.to_vec(),
+            });
+        }
         if payload.len() == 3 {
             return Ok(Self::Empty {
                 block_reference_indicator: reference,
@@ -1868,8 +2286,9 @@ impl NexradBlock {
         })
     }
 
-    pub fn to_payload(&self) -> Vec<u8> {
-        match self {
+    pub fn to_payload(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        Ok(match self {
             Self::Empty {
                 block_reference_indicator,
             } => block_reference_indicator.to_vec(),
@@ -1894,13 +2313,32 @@ impl NexradBlock {
                 out
             }
             Self::Unparsed { raw } => raw.clone(),
-        }
+        })
     }
 
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::Empty { .. } => Ok(()),
-            Self::EmptyBitmap { bitmap_bytes, .. } => {
+            Self::Empty {
+                block_reference_indicator,
+            } => {
+                if block_reference_indicator[0] & 0x80 != 0 {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "NEXRAD element identifier",
+                        details: "empty block cannot declare RLE".into(),
+                    });
+                }
+                Ok(())
+            }
+            Self::EmptyBitmap {
+                block_reference_indicator,
+                bitmap_bytes,
+            } => {
+                if block_reference_indicator[0] & 0x80 != 0 {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "NEXRAD element identifier",
+                        details: "empty bitmap cannot declare RLE".into(),
+                    });
+                }
                 if bitmap_bytes.is_empty() {
                     return Err(Gdl90Error::InvalidLength {
                         context: "NEXRAD empty-element bitmap",
@@ -1921,7 +2359,23 @@ impl NexradBlock {
                 }
                 Ok(())
             }
-            Self::RunLengthEncoded { runs, .. } => {
+            Self::RunLengthEncoded {
+                block_reference_indicator,
+                runs,
+            } => {
+                if block_reference_indicator[0] & 0x80 == 0 {
+                    return Err(Gdl90Error::InvalidField {
+                        field: "NEXRAD element identifier",
+                        details: "run-length block must declare RLE".into(),
+                    });
+                }
+                if runs.len() > 128 {
+                    return Err(Gdl90Error::InvalidLength {
+                        context: "NEXRAD runs",
+                        expected: "at most 128",
+                        actual: runs.len(),
+                    });
+                }
                 let total: usize = runs.iter().map(|run| run.count as usize).sum();
                 if total != 128 {
                     return Err(Gdl90Error::InvalidField {
@@ -1958,30 +2412,31 @@ impl NexradBlock {
         }
     }
 
-    pub fn decode_bins(&self) -> Vec<u8> {
-        match self {
+    pub fn decode_bins(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        Ok(match self {
             Self::Empty { .. } => vec![0u8; 128],
-            Self::EmptyBitmap { .. } => Vec::new(),
+            Self::EmptyBitmap { .. } | Self::Unparsed { .. } => Vec::new(),
             Self::RunLengthEncoded { runs, .. } => {
                 let mut bins = Vec::with_capacity(128);
                 for run in runs {
-                    bins.extend(std::iter::repeat_n(run.intensity, run.count as usize));
+                    bins.extend(std::iter::repeat_n(run.intensity, usize::from(run.count)));
                 }
                 bins
             }
-            Self::Unparsed { .. } => Vec::new(),
-        }
+        })
     }
 
-    pub fn decode_rows(&self) -> Vec<Vec<u8>> {
-        self.decode_bins()
+    pub fn decode_rows(&self) -> Result<Vec<Vec<u8>>> {
+        Ok(self
+            .decode_bins()?
             .chunks(32)
             .map(|row| row.to_vec())
-            .collect()
+            .collect())
     }
 
     pub fn decode_intensity_bins(&self) -> Result<Vec<NexradIntensity>> {
-        self.decode_bins()
+        self.decode_bins()?
             .into_iter()
             .map(NexradIntensity::from_encoded)
             .collect()
@@ -1992,13 +2447,21 @@ impl NexradBlock {
         Ok(bins.chunks(32).map(|row| row.to_vec()).collect())
     }
 
-    pub fn from_bins(block_reference_indicator: [u8; 3], bins: &[u8; 128]) -> Result<Self> {
+    pub fn from_bins(mut block_reference_indicator: [u8; 3], bins: &[u8; 128]) -> Result<Self> {
+        if bins.iter().any(|value| *value > 7) {
+            return Err(Gdl90Error::InvalidField {
+                field: "NEXRAD intensity",
+                details: "bins must be in 0..=7".into(),
+            });
+        }
         if bins.iter().all(|value| *value == 0) {
+            block_reference_indicator[0] &= 0x7f;
             return Ok(Self::Empty {
                 block_reference_indicator,
             });
         }
 
+        block_reference_indicator[0] |= 0x80;
         let mut runs = Vec::new();
         let mut current = bins[0];
         let mut count = 1u8;
@@ -2159,7 +2622,13 @@ impl NexradBlockReference {
         }
     }
 
-    pub fn to_raw(self) -> [u8; 3] {
+    pub fn to_raw(self) -> Result<[u8; 3]> {
+        if self.scale > 3 || self.block_number > 0x0f_ffff {
+            return Err(Gdl90Error::InvalidField {
+                field: "NEXRAD block reference",
+                details: "scale must fit two bits and block number twenty bits".into(),
+            });
+        }
         let mut first = ((self.scale & 0x03) << 4) | (((self.block_number >> 16) as u8) & 0x0F);
         if self.is_run_length_encoded {
             first |= 0x80;
@@ -2167,11 +2636,11 @@ impl NexradBlockReference {
         if !self.north {
             first |= 0x40;
         }
-        [
+        Ok([
             first,
             ((self.block_number >> 8) & 0xFF) as u8,
             (self.block_number & 0xFF) as u8,
-        ]
+        ])
     }
 
     pub fn scale_multiplier(self) -> Option<u8> {
@@ -2211,6 +2680,11 @@ impl NexradBlockReference {
             west_longitude_deg -= 360.0;
         }
 
+        if !(-90.0..=90.0).contains(&north_latitude_deg)
+            || !(-90.0..=90.0).contains(&(north_latitude_deg - latitude_height_deg))
+        {
+            return None;
+        }
         Some(NexradGeoBounds {
             north_latitude_deg,
             south_latitude_deg: north_latitude_deg - latitude_height_deg,
@@ -2510,7 +2984,7 @@ pub fn encode_dlac_text(text: &str) -> Result<Vec<u8>> {
     }
 
     let mut out = Vec::with_capacity((values.len() / 4) * 3);
-    for chunk in values.chunks_exact(4) {
+    for chunk in values.as_chunks::<4>().0 {
         let word = ((chunk[0] as u32) << 18)
             | ((chunk[1] as u32) << 12)
             | ((chunk[2] as u32) << 6)

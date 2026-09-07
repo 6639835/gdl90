@@ -57,6 +57,12 @@ pub(crate) fn encode_fixed_utf8<const N: usize>(
             details: format!("string is {} bytes, max is {N}", value.len()),
         });
     }
+    if value.as_bytes().contains(&0) {
+        return Err(Gdl90Error::InvalidField {
+            field,
+            details: "embedded NUL would truncate the fixed-width string".to_string(),
+        });
+    }
 
     let mut out = [0u8; N];
     out[..value.len()].copy_from_slice(value.as_bytes());
@@ -68,6 +74,12 @@ pub(crate) fn decode_fixed_utf8(bytes: &[u8], field: &'static str) -> Result<Str
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(bytes.len());
+    if used < bytes.len() && bytes[used + 1..].iter().any(|byte| *byte != 0) {
+        return Err(Gdl90Error::InvalidField {
+            field,
+            details: "bytes after the first NUL must be zero padding".to_string(),
+        });
+    }
     let text = std::str::from_utf8(&bytes[..used]).map_err(|_| Gdl90Error::Utf8 { field })?;
     Ok(text.to_string())
 }

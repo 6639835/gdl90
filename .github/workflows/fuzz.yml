@@ -1,0 +1,52 @@
+name: Fuzzing
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [frame_and_message, uplink]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install nightly --profile minimal
+      - run: cargo +nightly install cargo-fuzz --locked --version 0.13.2
+      - name: Materialize reviewed regression seeds
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          target = os.environ['TARGET']
+          corpus = pathlib.Path('fuzz/corpus') / target
+          corpus.mkdir(parents=True, exist_ok=True)
+          for number, line in enumerate(pathlib.Path(f'fuzz/seeds/{target}.txt').read_text().splitlines()):
+              if line and not line.startswith('#'):
+                  (corpus / str(number)).write_bytes(bytes.fromhex(line))
+          PY
+      - name: Run bounded sanitizer-enabled fuzzing
+        env:
+          TARGET: ${{ matrix.target }}
+          FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '30' || '300' }}
+        run: cargo +nightly fuzz run "$TARGET" -- -max_total_time="$FUZZ_SECONDS" -max_len=8192 -rss_limit_mb=512 -timeout=10
+      - name: Retain corpus and any crash reproducers
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.sha }}
+          path: |
+            fuzz/artifacts/
+            fuzz/corpus/
+          retention-days: 14
