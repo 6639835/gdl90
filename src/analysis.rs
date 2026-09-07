@@ -3,13 +3,16 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::session::RecordedDatagram;
+use crate::{Gdl90Error, Message};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionAnalysis {
     pub datagram_count: usize,
     pub total_bytes: usize,
     pub delayed_datagram_count: usize,
     pub total_declared_delay_ms: u64,
+    /// True when the exact sum cannot be represented in u64.
+    pub total_declared_delay_saturated: bool,
     pub decoded_message_count: usize,
     pub decode_error_count: usize,
     pub empty_datagram_count: usize,
@@ -23,13 +26,13 @@ impl SessionAnalysis {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct DatagramIssue {
     pub datagram_index: usize,
     pub details: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionValidation {
     pub datagram_count: usize,
     pub valid_datagram_count: usize,
@@ -43,83 +46,86 @@ impl SessionValidation {
     }
 }
 
-pub fn analyze_datagrams(datagrams: &[RecordedDatagram]) -> SessionAnalysis {
-    let mut analysis = SessionAnalysis {
-        datagram_count: datagrams.len(),
-        total_bytes: 0,
-        delayed_datagram_count: 0,
-        total_declared_delay_ms: 0,
-        decoded_message_count: 0,
-        decode_error_count: 0,
-        empty_datagram_count: 0,
-        max_messages_per_datagram: 0,
-        message_counts: BTreeMap::new(),
-    };
-
-    for datagram in datagrams {
-        analysis.total_bytes += datagram.bytes.len();
-        if let Some(delay_ms) = datagram.delay_ms {
-            analysis.delayed_datagram_count += 1;
-            analysis.total_declared_delay_ms += delay_ms;
+impl SessionAnalysis {
+    pub(crate) fn observe(
+        &mut self,
+        datagram: &RecordedDatagram,
+        decoded: &[crate::Result<Message>],
+    ) {
+        self.datagram_count += 1;
+        self.total_bytes += datagram.bytes.len();
+        if let Some(delay) = datagram.delay_ms {
+            self.delayed_datagram_count += 1;
+            match self.total_declared_delay_ms.checked_add(delay) {
+                Some(total) => self.total_declared_delay_ms = total,
+                None => {
+                    self.total_declared_delay_ms = u64::MAX;
+                    self.total_declared_delay_saturated = true;
+                }
+            }
         }
-
-        let decoded = datagram.decode_messages();
-        analysis.max_messages_per_datagram = analysis.max_messages_per_datagram.max(decoded.len());
+        self.max_messages_per_datagram = self.max_messages_per_datagram.max(decoded.len());
         if decoded.is_empty() {
-            analysis.empty_datagram_count += 1;
+            self.empty_datagram_count += 1;
         }
-
         for result in decoded {
             match result {
                 Ok(message) => {
-                    analysis.decoded_message_count += 1;
-                    *analysis
-                        .message_counts
-                        .entry(message.kind_name())
-                        .or_default() += 1;
+                    self.decoded_message_count += 1;
+                    *self.message_counts.entry(message.kind_name()).or_default() += 1;
                 }
-                Err(_) => analysis.decode_error_count += 1,
+                Err(_) => self.decode_error_count += 1,
             }
         }
     }
+}
 
+impl SessionValidation {
+    pub(crate) fn observe(&mut self, decoded: &[Result<Message, Gdl90Error>]) {
+        self.datagram_count += 1;
+        let mut invalid = false;
+        if decoded.is_empty() {
+            self.issues.push(DatagramIssue {
+                datagram_index: self.datagram_count,
+                details: "contains no complete framed messages".into(),
+            });
+            invalid = true;
+        }
+        for result in decoded {
+            if let Err(error) = result {
+                self.issues.push(DatagramIssue {
+                    datagram_index: self.datagram_count,
+                    details: error.to_string(),
+                });
+                invalid = true;
+            }
+        }
+        if invalid {
+            self.invalid_datagram_count += 1;
+        } else {
+            self.valid_datagram_count += 1;
+        }
+    }
+}
+
+pub fn analyze_datagrams(datagrams: &[RecordedDatagram]) -> SessionAnalysis {
+    let mut analysis = SessionAnalysis::default();
+    for datagram in datagrams {
+        analysis.observe(datagram, &datagram.decode_messages());
+    }
     analysis
 }
 
+/// Syntactic framing/message validation, not interoperability or certification.
+pub fn validate_datagrams_syntax(datagrams: &[RecordedDatagram]) -> SessionValidation {
+    let mut validation = SessionValidation::default();
+    for datagram in datagrams {
+        validation.observe(&datagram.decode_messages());
+    }
+    validation
+}
+
+/// Backward-compatible alias for syntactic validation.
 pub fn validate_datagrams(datagrams: &[RecordedDatagram]) -> SessionValidation {
-    let mut issues = Vec::new();
-    let mut valid_datagram_count = 0usize;
-
-    for (index, datagram) in datagrams.iter().enumerate() {
-        let decoded = datagram.decode_messages();
-        if decoded.is_empty() {
-            issues.push(DatagramIssue {
-                datagram_index: index + 1,
-                details: "contains no complete framed messages".to_string(),
-            });
-            continue;
-        }
-
-        let mut had_issue = false;
-        for result in decoded {
-            if let Err(error) = result {
-                had_issue = true;
-                issues.push(DatagramIssue {
-                    datagram_index: index + 1,
-                    details: error.to_string(),
-                });
-            }
-        }
-
-        if !had_issue {
-            valid_datagram_count += 1;
-        }
-    }
-
-    SessionValidation {
-        datagram_count: datagrams.len(),
-        valid_datagram_count,
-        invalid_datagram_count: datagrams.len().saturating_sub(valid_datagram_count),
-        issues,
-    }
+    validate_datagrams_syntax(datagrams)
 }
