@@ -1,72 +1,48 @@
-name: Production audit evidence
-
+name: Dependency audit evidence
 on:
   push:
     branches: ['audit/production-readiness-2026-09-07']
-  workflow_dispatch:
-
+    paths: ['.github/workflows/audit-evidence.yml']
 permissions:
   contents: read
-
 jobs:
-  verify:
+  audit:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: 942a06a375678f06679d0bba5dc843fb4156c95d
-          path: baseline
-          persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: adacbbba29e6d6ce4e1ea711a51218b1b872e5ea
-          path: candidate
           persist-credentials: false
-      - name: Install the existing hardening branch's declared MSRV
-        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
-      - name: Verify both immutable source revisions
-        shell: bash
+      - name: Install audit tooling
         run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo install cargo-audit --locked
           mkdir -p evidence
-          rustc +1.88.0 -Vv > evidence/toolchain.txt
-          set +e
-          status=0
-          for source in baseline candidate; do
-            git -C "$source" rev-parse HEAD > "evidence/$source.commit"
-            (cd "$source" && cargo +1.88.0 test --locked --all-targets) > "evidence/$source.tests.log" 2>&1
-            result=$?; echo "$result" > "evidence/$source.tests.status"; status=$((status | result))
-            (cd "$source" && cargo +1.88.0 fmt --all -- --check) > "evidence/$source.fmt.log" 2>&1
-            result=$?; echo "$result" > "evidence/$source.fmt.status"; status=$((status | result))
-            (cd "$source" && cargo +1.88.0 clippy --locked --all-targets -- -D warnings) > "evidence/$source.clippy.log" 2>&1
-            result=$?; echo "$result" > "evidence/$source.clippy.status"; status=$((status | result))
-            git -C "$source" archive HEAD | gzip > "evidence/$source.tar.gz"
-          done
-          echo "$status" > evidence/exit-status
-      - name: Prepare an offline audit environment
+          rustc -Vv > evidence/toolchain.txt
+          cargo audit --version > evidence/audit-version.txt
+          cargo search cargo-fuzz --limit 1 > evidence/fuzz-version.txt
+      - name: Audit original and updated lockfiles
         shell: bash
         run: |
-          mkdir -p offline
-          cd baseline
-          cargo +1.88.0 vendor --locked --sync ../candidate/Cargo.toml ../offline/vendor > ../offline/config.toml
-          cd ..
-          cp -a "$(rustc +1.88.0 --print sysroot)" offline/rust
-          rm -rf offline/rust/share/doc
-          tar -C offline -czf offline-audit-environment.tar.gz .
-      - name: Retain verification evidence and exact source snapshots
+          cp Cargo.lock evidence/before.lock
+          cargo audit --json > evidence/before-audit.json
+          cargo update
+          cargo update --manifest-path fuzz/Cargo.toml
+          cargo audit --json > evidence/after-audit.json
+          cargo audit --file fuzz/Cargo.lock --json > evidence/fuzz-audit.json
+          git -C "$HOME/.cargo/advisory-db" rev-parse HEAD > evidence/advisory-db-commit.txt
+          cargo metadata --locked --format-version 1 > evidence/dependencies.json
+          cargo test --locked --all-targets > evidence/dependency-update-tests.log 2>&1
+          cargo vendor --locked --versioned-dirs --sync fuzz/Cargo.toml offline/vendor > evidence/vendor-config.toml
+          cp Cargo.lock evidence/after.lock
+          cp fuzz/Cargo.lock evidence/fuzz.lock
+          tar -C offline -czf evidence/vendor.tar.gz vendor
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: audit-source-and-evidence
+          name: dependency-audit-evidence
           path: evidence/
           retention-days: 7
           if-no-files-found: error
-      - name: Retain temporary offline build tools
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: audit-offline-build-environment
-          path: offline-audit-environment.tar.gz
-          retention-days: 1
-          compression-level: 0
-      - name: Check verification outcomes
-        run: test "$(cat evidence/exit-status)" = 0
