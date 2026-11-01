@@ -1,0 +1,30 @@
+
+[package]
+name = "gdl90-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+gdl90 = { path = ".." }
+
+[[bin]]
+name = "frame_and_message"
+path = "fuzz_targets/frame_and_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "uplink"
+path = "fuzz_targets/uplink.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

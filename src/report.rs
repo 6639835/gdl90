@@ -1,7 +1,7 @@
 use serde::Serialize;
 
-use crate::analysis::{SessionAnalysis, SessionValidation, analyze_datagrams, validate_datagrams};
-use crate::frame::FrameDecoder;
+use crate::analysis::{SessionAnalysis, SessionValidation};
+use crate::frame::decode_datagram_frames;
 use crate::message::Message;
 use crate::session::{RecordedDatagram, encode_hex};
 
@@ -45,40 +45,47 @@ pub enum FrameReport {
 }
 
 pub fn build_session_report(datagrams: &[RecordedDatagram]) -> SessionReport {
-    let analysis = analyze_datagrams(datagrams);
-    let validation = validate_datagrams(datagrams);
+    let mut analysis = SessionAnalysis::default();
+    let mut validation = SessionValidation::default();
     let mut reports = Vec::with_capacity(datagrams.len());
 
     for (datagram_index, datagram) in datagrams.iter().enumerate() {
-        let mut decoder = FrameDecoder::new();
-        let mut frame_results = decoder.push(&datagram.bytes);
-        if let Some(result) = decoder.finish() {
-            frame_results.push(result);
-        }
+        let frame_results = decode_datagram_frames(&datagram.bytes);
+        let messages: Vec<_> = frame_results
+            .iter()
+            .map(|frame| match frame {
+                Ok(clear) => Message::decode(clear),
+                Err(error) => Err(error.clone()),
+            })
+            .collect();
+        analysis.observe(datagram, &messages);
+        validation.observe(&messages);
         let mut frames = Vec::with_capacity(frame_results.len());
-
-        for (frame_index, frame_result) in frame_results.into_iter().enumerate() {
-            match frame_result {
-                Ok(clear) => match Message::decode(&clear) {
-                    Ok(message) => frames.push(FrameReport::Decoded {
-                        index: frame_index + 1,
+        for (frame_index, (frame_result, message)) in
+            frame_results.into_iter().zip(messages).enumerate()
+        {
+            let index = frame_index + 1;
+            frames.push(match frame_result {
+                Ok(clear) => match message {
+                    Ok(message) => FrameReport::Decoded {
+                        index,
                         clear_hex: encode_hex(&clear),
                         message_id: message.message_id(),
                         kind: message.kind_name(),
                         summary: message.summary(),
-                    }),
-                    Err(error) => frames.push(FrameReport::MessageError {
-                        index: frame_index + 1,
+                    },
+                    Err(error) => FrameReport::MessageError {
+                        index,
                         clear_hex: encode_hex(&clear),
                         message_id: clear.first().copied(),
                         error: error.to_string(),
-                    }),
+                    },
                 },
-                Err(error) => frames.push(FrameReport::FrameError {
-                    index: frame_index + 1,
+                Err(error) => FrameReport::FrameError {
+                    index,
                     error: error.to_string(),
-                }),
-            }
+                },
+            });
         }
 
         reports.push(DatagramReport {
@@ -154,6 +161,12 @@ pub fn render_analysis_text(analysis: &SessionAnalysis) -> String {
             analysis.total_declared_delay_ms
         ),
     );
+    if analysis.total_declared_delay_saturated {
+        push_line(
+            &mut out,
+            "declared replay delay exceeds u64; displayed total is saturated".into(),
+        );
+    }
     push_line(
         &mut out,
         format!("decoded messages: {}", analysis.decoded_message_count),
@@ -222,4 +235,22 @@ pub fn render_json_report(report: &SessionReport, pretty: bool) -> serde_json::R
 fn push_line(out: &mut String, line: String) {
     out.push_str(&line);
     out.push('\n');
+}
+
+/// Stream JSON into a same-directory temporary file and atomically replace the
+/// destination only after serialization, flush, and file synchronization succeed.
+pub fn write_json_report(
+    path: impl AsRef<std::path::Path>,
+    report: &SessionReport,
+    pretty: bool,
+) -> crate::Result<()> {
+    crate::storage::atomic_write(path.as_ref(), |writer| {
+        let result = if pretty {
+            serde_json::to_writer_pretty(writer, report)
+        } else {
+            serde_json::to_writer(writer, report)
+        };
+        result.map_err(std::io::Error::other)
+    })
+    .map_err(|error| crate::Gdl90Error::io("write JSON report", error))
 }

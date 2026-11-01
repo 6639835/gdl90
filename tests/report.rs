@@ -50,7 +50,7 @@ fn json_and_text_reports_render() {
 
     let text = render_text_report(&report);
     assert!(text.contains("datagrams: 1"));
-    assert!(text.contains("no complete framed messages"));
+    assert!(text.contains("missing start or end flag"));
 
     let json = render_json_report(&report, true).unwrap();
     assert!(json.contains("\"datagram_count\": 1"));
@@ -79,7 +79,7 @@ fn session_report_distinguishes_decoded_message_and_frame_failures() {
 
     let decoded = heartbeat.encode_frame().unwrap();
     let message_error = encode_frame(&[0x81, 0x00]);
-    let frame_error = vec![0x7E, 0x7D, 0x00, 0x7E];
+    let frame_error = vec![0x7E, 0x7D, 0x00, 0x00, 0x7E];
     let report = build_session_report(&[RecordedDatagram {
         delay_ms: Some(25),
         bytes: [decoded, message_error, frame_error].concat(),

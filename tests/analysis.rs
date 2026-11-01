@@ -67,7 +67,7 @@ fn validation_reports_invalid_datagrams() {
 }
 
 #[test]
-fn analysis_and_validation_handle_mixed_frames_and_empty_datagrams() {
+fn analysis_and_validation_handle_mixed_frames_and_unframed_datagrams() {
     let heartbeat = Message::Heartbeat(Heartbeat {
         status: HeartbeatStatus {
             gps_position_valid: true,
@@ -107,8 +107,8 @@ fn analysis_and_validation_handle_mixed_frames_and_empty_datagrams() {
     assert_eq!(analysis.delayed_datagram_count, 1);
     assert_eq!(analysis.total_declared_delay_ms, 15);
     assert_eq!(analysis.decoded_message_count, 2);
-    assert_eq!(analysis.decode_error_count, 1);
-    assert_eq!(analysis.empty_datagram_count, 1);
+    assert_eq!(analysis.decode_error_count, 2);
+    assert_eq!(analysis.empty_datagram_count, 0);
     assert_eq!(analysis.max_messages_per_datagram, 3);
     assert_eq!(analysis.message_counts.get("Heartbeat"), Some(&1));
     assert_eq!(analysis.message_counts.get("Unknown(0x2a)"), Some(&1));
@@ -127,9 +127,6 @@ fn analysis_and_validation_handle_mixed_frames_and_empty_datagrams() {
             .any(|issue| issue.datagram_index == 1 && issue.details.contains("crc mismatch"))
     );
     assert!(validation.issues.iter().any(|issue| {
-        issue.datagram_index == 2
-            && issue
-                .details
-                .contains("contains no complete framed messages")
+        issue.datagram_index == 2 && issue.details.contains("missing start or end flag")
     }));
 }
