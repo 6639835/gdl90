@@ -17,11 +17,11 @@ Direct frame decoding now defaults to the same 1,024-byte stuffed-body cap as st
 
 The strict Garmin geometric-altitude VFOM sentinel remains the default; use the explicit ForeFlight-compatible methods only for that interoperability profile. Negative ForeFlight headings are canonicalized as documented in CONFORMANCE.md, pending representative-device verification.
 
-Reassembly expiry is a hard lifetime from the first segment rather than a refreshable inactivity timer. Invalid TWGO repeated headers are rejected before insertion. Applications must choose stable source scopes and call expiry during idle periods.
+Reassembly expiry is a hard lifetime from the first segment rather than a refreshable inactivity timer. Invalid TWGO repeated headers are rejected before insertion. `ApduReassemblyScope::generation_key` is removed: header time no longer partitions a product file. Conflicting reused segment slots remain errors until explicit discard or hard expiry. Applications must choose stable source scopes and call expiry during idle periods.
 
 ## Files, CLI and reports
 
-Capture now requires `capture <bind-addr> <output-file> [count]`. Unknown commands, misspelled options and extra arguments fail before side effects. Broken stdout pipes exit normally; empty/oversized UDP datagrams no longer terminate capture. Capture stores observed inter-arrival delays and retains one file handle; rotation, graceful service shutdown and concurrent writers are not provided.
+Capture now requires `capture <bind-addr> <output-file> [count]`. Unknown commands, misspelled options and extra arguments fail before side effects. Broken stdout pipes exit normally; empty/oversized UDP datagrams no longer terminate capture. Each captured record is now synchronized before acknowledgement; slow storage may reduce capture throughput. CLI `decode-stream` accepts up to 64 KiB decoded bytes independently of the datagram cap; the library `decode_hex` default remains 2,048 bytes. Capture stores observed inter-arrival delays and retains one file handle; rotation, graceful service shutdown and concurrent writers are not provided.
 
 Session/report replacements are atomic publication attempts; appended captures reject a torn final line. Empty datagrams cannot be represented as a session record. JSON analysis gains `total_declared_delay_saturated`; readers should tolerate additive fields. Summaries escape potentially hostile strings, so text presentation changes but underlying decoded data does not. Replay/send-demo intervals are checked against a 24-hour per-delay policy before transmission.
 

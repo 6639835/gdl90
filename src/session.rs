@@ -370,6 +370,8 @@ pub fn parse_datagram_line_with_limit(
     Ok(Some(RecordedDatagram { delay_ms, bytes }))
 }
 
+/// Decode one datagram-sized hex value. For complete streams, use
+/// `decode_hex_with_limit` with an explicit stream budget.
 pub fn decode_hex(input: &str) -> Result<Vec<u8>> {
     decode_hex_with_limit(input, DEFAULT_MAX_DATAGRAM_SIZE)
 }

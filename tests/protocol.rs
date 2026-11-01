@@ -2081,7 +2081,7 @@ fn optional_product_descriptors_are_preserved_losslessly() {
 }
 
 #[test]
-fn reassembly_separates_reused_ids_by_generation_time() {
+fn reassembly_rejects_conflicting_reused_ids_until_expiry() {
     let start = Instant::now();
     let mut reassembler = ApduReassembler::new();
     let mut first_generation = segmented_apdu(413, 7, 2, 1, b"ONE");
@@ -2092,13 +2092,22 @@ fn reassembly_separates_reused_ids_by_generation_time() {
     reassembler
         .push_from_at(10, first_generation, start)
         .unwrap();
+    let buffered = reassembler.buffered_bytes();
+    assert!(
+        reassembler
+            .push_from_at(10, second_generation.clone(), start)
+            .is_err()
+    );
+    assert_eq!(reassembler.pending_file_count(), 1);
+    assert_eq!(reassembler.buffered_bytes(), buffered);
+    assert_eq!(
+        reassembler.expire_at(start + reassembler.limits().max_age),
+        1
+    );
     reassembler
-        .push_from_at(10, second_generation, start)
+        .push_from_at(10, second_generation, start + reassembler.limits().max_age)
         .unwrap();
-
-    let scopes = reassembler.pending_scopes();
-    assert_eq!(scopes.len(), 2);
-    assert_ne!(scopes[0].generation_key, scopes[1].generation_key);
+    assert_eq!(reassembler.pending_file_count(), 1);
 }
 
 #[test]
@@ -2181,4 +2190,33 @@ fn opaque_apdu_constructor_rejects_the_minimal_descriptor_form() {
             ..
         })
     ));
+}
+
+#[test]
+fn reassembly_completes_despite_different_segment_times() {
+    for with_date in [false, true] {
+        let first = segmented_apdu(999, 17, 2, 1, b"FIRST-");
+        let mut second = segmented_apdu(999, 17, 2, 2, b"SECOND");
+        second.header.hours = 13;
+        second.header.minutes = 35;
+        if with_date {
+            second.header.time_option = 2;
+            second.header.month_day = Some(ApduMonthDay { month: 11, day: 1 });
+        } else {
+            second.header.time_option = 1;
+            second.header.seconds = Some(42);
+        }
+        let mut reassembler = ApduReassembler::new();
+        reassembler.push(second).unwrap();
+        assert_eq!(reassembler.pending_file_count(), 1);
+        let expected_header = first.header;
+        let ReassemblyStatus::Complete(product) = reassembler.push(first).unwrap() else {
+            panic!("different header times split one product file");
+        };
+        assert_eq!(product.payload, b"FIRST-SECOND");
+        assert_eq!(product.header.hours, expected_header.hours);
+        assert_eq!(product.header.time_option, expected_header.time_option);
+        assert_eq!(reassembler.pending_file_count(), 0);
+        assert_eq!(reassembler.buffered_bytes(), 0);
+    }
 }

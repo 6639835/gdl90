@@ -19,7 +19,8 @@ use gdl90::report::{
     render_validation_text, write_json_report,
 };
 use gdl90::session::{
-    DatagramFileWriter, RecordedDatagram, SessionWriteLimits, decode_hex, read_datagram_file,
+    DatagramFileWriter, RecordedDatagram, SessionWriteLimits, decode_hex, decode_hex_with_limit,
+    read_datagram_file,
 };
 use gdl90::support::{
     SupportState, control_panel_connections, control_panel_profiles, missing_sections,
@@ -29,6 +30,32 @@ use gdl90::transport::{
     FOREFLIGHT_DISCOVERY_PORT, FOREFLIGHT_GDL90_PORT, ForeFlightUdpSender, UdpGdl90Receiver,
     UdpGdl90Sender, discover_foreflight_once,
 };
+
+// Bounds the complete CLI stream and its decoded result collection independently of UDP.
+const MAX_CLI_STREAM_BYTES: usize = 64 * 1024;
+
+trait CaptureSink {
+    fn append(&mut self, datagram: &RecordedDatagram) -> gdl90::Result<()>;
+    fn sync_all(&mut self) -> gdl90::Result<()>;
+}
+
+impl CaptureSink for DatagramFileWriter {
+    fn append(&mut self, datagram: &RecordedDatagram) -> gdl90::Result<()> {
+        DatagramFileWriter::append(self, datagram)
+    }
+    fn sync_all(&mut self) -> gdl90::Result<()> {
+        DatagramFileWriter::sync_all(self)
+    }
+}
+
+fn persist_capture(
+    writer: &mut impl CaptureSink,
+    datagram: &RecordedDatagram,
+) -> gdl90::Result<()> {
+    writer.append(datagram)?;
+    // Checkpoint before acknowledging, even for sparse or unbounded capture.
+    writer.sync_all()
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -62,7 +89,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("decode-stream") => {
             let hex = require_arg(args.next(), "hex stream")?;
-            let bytes = decode_hex(&hex)?;
+            let bytes = decode_hex_with_limit(&hex, MAX_CLI_STREAM_BYTES)?;
             let mut decoder = gdl90::FrameMessageDecoder::new();
             for result in decoder.push(&bytes) {
                 writeln!(out, "{:#?}", result?)?;
@@ -256,10 +283,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let delay = previous.map_or(0, |last| {
                     u64::try_from(now.duration_since(last).as_millis()).unwrap_or(u64::MAX)
                 });
-                writer.append(&RecordedDatagram {
-                    delay_ms: Some(delay),
-                    bytes: datagram.bytes,
-                })?;
+                persist_capture(
+                    &mut writer,
+                    &RecordedDatagram {
+                        delay_ms: Some(delay),
+                        bytes: datagram.bytes,
+                    },
+                )?;
                 previous = Some(now);
                 seen += 1;
                 writeln!(out, "captured datagram {seen} from {}", datagram.source)?;
@@ -536,6 +566,74 @@ fn receive_next(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_checkpoints_each_record_and_propagates_failures() {
+        #[derive(Default)]
+        struct Sink {
+            calls: Vec<&'static str>,
+            fail_append: bool,
+            fail_sync: bool,
+        }
+        impl CaptureSink for Sink {
+            fn append(&mut self, _: &RecordedDatagram) -> gdl90::Result<()> {
+                self.calls.push("append");
+                if self.fail_append {
+                    return Err(gdl90::Gdl90Error::Io {
+                        context: "test append",
+                        kind: io::ErrorKind::Other,
+                        details: "failure".into(),
+                    });
+                }
+                Ok(())
+            }
+            fn sync_all(&mut self) -> gdl90::Result<()> {
+                self.calls.push("sync");
+                if self.fail_sync {
+                    return Err(gdl90::Gdl90Error::Io {
+                        context: "test sync",
+                        kind: io::ErrorKind::Other,
+                        details: "failure".into(),
+                    });
+                }
+                Ok(())
+            }
+        }
+        let record = RecordedDatagram {
+            delay_ms: Some(0),
+            bytes: vec![1],
+        };
+        let mut sink = Sink::default();
+        for _ in 0..2 {
+            persist_capture(&mut sink, &record).unwrap();
+        }
+        assert_eq!(sink.calls, ["append", "sync", "append", "sync"]);
+        sink.fail_sync = true;
+        assert!(persist_capture(&mut sink, &record).is_err());
+        sink.calls.clear();
+        sink.fail_append = true;
+        assert!(persist_capture(&mut sink, &record).is_err());
+        assert_eq!(sink.calls, ["append"]);
+    }
+
+    #[test]
+    fn stream_hex_limit_is_bounded_independently_of_datagrams() {
+        let at_limit = "00".repeat(MAX_CLI_STREAM_BYTES);
+        assert_eq!(
+            decode_hex_with_limit(&at_limit, MAX_CLI_STREAM_BYTES)
+                .unwrap()
+                .len(),
+            MAX_CLI_STREAM_BYTES
+        );
+        assert!(matches!(
+            decode_hex_with_limit(&(at_limit + "00"), MAX_CLI_STREAM_BYTES),
+            Err(gdl90::Gdl90Error::ResourceLimit {
+                limit: MAX_CLI_STREAM_BYTES,
+                ..
+            })
+        ));
+        assert!(decode_hex(&"00".repeat(2049)).is_err());
+    }
+
     #[test]
     fn demo_encodes_at_counter_boundaries() {
         for tick in [0, 32_767, 32_768, u32::MAX] {

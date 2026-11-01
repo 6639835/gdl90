@@ -16,7 +16,7 @@ Garmin Rev A delegates portions of Basic/Long UAT payloads and FIS-B product enc
 - Streaming frame and UDP input paths have explicit memory limits and recover after malformed input.
 - Each UDP datagram is decoded independently; bytes from separate datagrams or sources are never combined.
 - Unused UAT Application Data must be zero-filled.
-- APDU reassembly is bounded by file count, byte count, segment count, age, source identity, and APDU generation time.
+- APDU reassembly is bounded by file count, byte count, segment count, age, source identity, product ID, and product file ID. Header time is not used as a generation identifier.
 - Optional Product Descriptor forms are preserved losslessly instead of being rejected or guessed.
 - ForeFlight payload budgets account for minimum IPv4/IPv6 and UDP headers so the complete packet remains below 1500 bytes.
 
@@ -29,3 +29,13 @@ ForeFlight publishes an AHRS heading input range of -360.0 through +360.0 degree
 ## Evidence policy
 
 A support-matrix entry is `Complete` only when the public normative source contains enough detail for implementation and the repository includes positive and negative tests. Externally delegated schemas are marked `BlockedByExternalSpec`; physical or lifecycle behavior outside the codec is marked `Partial`.
+
+## Segmented APDU identity evidence
+
+EASA CS-ETSO Amendment 11, ETSO-C157a Appendix 1 §§1.1.1 and 1.1.9
+([published amendments to DO-267A](https://www.easa.europa.eu/sites/default/files/dfu/Easy%20Access%20Rules%20CS-ETSO%20%28Amendment%2011%29.pdf)),
+identifies sequences by product and product file ID or ground station, and defines
+Product File ID as the association reference. We infer that adding exact header-time
+equality to that association is unjustified; the public amendment does not establish
+such a requirement. APDU number orders segments and must not partition the file.
+This evidence does not establish full DO-267A conformance or solve ambiguous ID reuse.

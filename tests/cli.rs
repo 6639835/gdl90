@@ -150,3 +150,32 @@ fn closed_stdout_does_not_panic() {
     );
     assert!(!String::from_utf8_lossy(&result.stderr).contains("panicked"));
 }
+
+#[test]
+fn decode_stream_accepts_multiple_datagrams_worth_of_frames() {
+    let frame = gdl90::frame::encode_frame(&[4, 0, 0]);
+    let bytes = frame.repeat(400);
+    assert!(bytes.len() > gdl90::transport::DEFAULT_MAX_DATAGRAM_SIZE);
+    let hex = gdl90::session::encode_hex(&bytes);
+    let result = Command::new(env!("CARGO_BIN_EXE_gdl90"))
+        .args(["decode-stream", &hex])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout)
+            .matches("message_id: 4")
+            .count(),
+        400
+    );
+    assert!(
+        !Process::spawn(&["decode-frame", &hex])
+            .finish()
+            .status
+            .success()
+    );
+}

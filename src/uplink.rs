@@ -1078,21 +1078,6 @@ impl ReassemblyLimits {
 pub struct ApduReassemblyScope {
     pub source_id: u64,
     pub key: ApduProductFileKey,
-    /// Packed APDU generation time, separating reused product-file ids.
-    pub generation_key: u32,
-}
-
-fn apdu_generation_key(header: ApduHeader) -> u32 {
-    let (month, day) = header
-        .month_day
-        .map(|value| (value.month, value.day))
-        .unwrap_or((0, 0));
-    (u32::from(header.time_option) << 26)
-        | (u32::from(month) << 22)
-        | (u32::from(day) << 17)
-        | (u32::from(header.hours) << 12)
-        | (u32::from(header.minutes) << 6)
-        | u32::from(header.seconds.unwrap_or(0))
 }
 
 #[derive(Debug, Clone)]
@@ -1221,11 +1206,7 @@ impl ApduReassembler {
             product_id: apdu.header.product_id,
             product_file_id: segmentation.product_file_id,
         };
-        let scope = ApduReassemblyScope {
-            source_id,
-            key,
-            generation_key: apdu_generation_key(apdu.header),
-        };
+        let scope = ApduReassemblyScope { source_id, key };
         let total = segmentation.product_file_length;
         let total_usize = usize::from(total);
         if total_usize > self.limits.max_segments_per_file {
@@ -1250,15 +1231,13 @@ impl ApduReassembler {
                 .pending
                 .get(&scope)
                 .and_then(|file| file.segments.iter().flatten().next())
-            {
-                if apdu.payload[..TWGO_REPEATED_HEADER_LEN]
+                && apdu.payload[..TWGO_REPEATED_HEADER_LEN]
                     != stored.payload[..TWGO_REPEATED_HEADER_LEN]
-                {
-                    return Err(Gdl90Error::InvalidField {
-                        field: "TWGO repeated header",
-                        details: "segment differs from the pending product header".into(),
-                    });
-                }
+            {
+                return Err(Gdl90Error::InvalidField {
+                    field: "TWGO repeated header",
+                    details: "segment differs from the pending product header".into(),
+                });
             }
         }
 
